@@ -1,6 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ========== ГЛАВНОЕ МЕНЮ ==========
 def main_menu_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🐒 Моя макака", callback_data="my_macaco")],
@@ -17,7 +16,6 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ========== МЕНЮ ВЫБОРА ЕДЫ ==========
 def food_selection_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -39,7 +37,6 @@ def food_info_kb(food_id: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ========== МЕНЮ ВЫБОРА СТАВКИ ДЛЯ ВЫЗОВА ==========
 def bet_selection_challenge_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -54,7 +51,6 @@ def bet_selection_challenge_kb() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ========== КНОПКИ ДЛЯ ОТВЕТА НА ВЫЗОВ ==========
 def challenge_response_kb(challenge_id: str, bet: int) -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -64,7 +60,6 @@ def challenge_response_kb(challenge_id: str, bet: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ========== ПОСЛЕ БОЯ ==========
 def after_fight_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="⚔️ Новый бой", callback_data="challenge_fight")],
@@ -72,14 +67,12 @@ def after_fight_kb() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ========== КНОПКА НАЗАД ==========
 def back_to_menu_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="⬅️ В меню", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ========== ИНЛАЙН-КНОПКИ ==========
 def inline_actions_kb(macaco_id: int) -> InlineKeyboardMarkup:
     keyboard = [
         [
