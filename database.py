@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple, Optional
 
 DB_NAME = 'macaco_bot.db'
 
-# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ==========
+# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ С ПРОВЕРКОЙ КОЛОНОК ==========
 async def create_tables():
     async with aiosqlite.connect(DB_NAME) as db:
         # Пользователи
@@ -33,6 +33,7 @@ async def create_tables():
                 weight INTEGER DEFAULT 10,
                 last_fed TIMESTAMP,
                 last_daily TIMESTAMP,
+                last_happiness_decay TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
@@ -70,7 +71,30 @@ async def create_tables():
             (4, '🥗 Салат', 2, 15, 40, 6)
         ''')
         await db.commit()
-        print("✅ Таблицы созданы")
+        print("✅ Таблицы созданы/проверены")
+        
+        # Проверяем наличие колонки last_happiness_decay (для старых БД)
+        await add_last_happiness_decay_column()
+
+async def add_last_happiness_decay_column():
+    """Добавляет колонку last_happiness_decay, если её нет"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("PRAGMA table_info(macacos)")
+        columns = await cursor.fetchall()
+        column_names = [col[1] for col in columns]
+        
+        if 'last_happiness_decay' not in column_names:
+            print("➕ Добавляем колонку last_happiness_decay...")
+            await db.execute('''
+                ALTER TABLE macacos ADD COLUMN last_happiness_decay TIMESTAMP
+            ''')
+            # Заполняем существующие записи текущим временем
+            now = datetime.now().isoformat()
+            await db.execute('''
+                UPDATE macacos SET last_happiness_decay = ? WHERE last_happiness_decay IS NULL
+            ''', (now,))
+            await db.commit()
+            print("✅ Колонка last_happiness_decay добавлена и заполнена.")
 
 # ========== ПОЛЬЗОВАТЕЛИ ==========
 async def get_or_create_user(user_data: Dict) -> bool:
@@ -91,7 +115,6 @@ async def get_or_create_user(user_data: Dict) -> bool:
 # ========== МАКАКИ ==========
 async def get_or_create_macaco(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем самую свежую макаку пользователя
         cursor = await db.execute('''
             SELECT * FROM macacos 
             WHERE user_id = ? 
@@ -103,9 +126,9 @@ async def get_or_create_macaco(user_id: int) -> Dict:
         if not row:
             now = datetime.now().isoformat()
             await db.execute('''
-                INSERT INTO macacos (user_id, last_fed, last_daily, weight)
-                VALUES (?, ?, ?, 10)
-            ''', (user_id, now, now))
+                INSERT INTO macacos (user_id, last_fed, last_daily, last_happiness_decay, weight)
+                VALUES (?, ?, ?, ?, 10)
+            ''', (user_id, now, now, now))
             await db.commit()
             cursor = await db.execute('''
                 SELECT * FROM macacos 
@@ -126,36 +149,79 @@ async def get_or_create_macaco(user_id: int) -> Dict:
             'exp': row[7],
             'weight': row[8],
             'last_fed': row[9],
-            'last_daily': row[10]
+            'last_daily': row[10],
+            'last_happiness_decay': row[11] if len(row) > 11 else None
         }
 
-# ========== ДОБАВЛЕНИЕ ОПЫТА И ПОВЫШЕНИЕ УРОВНЯ ==========
-async def add_experience(macaco_id: int, amount: int):
-    """Добавляет опыт, повышает уровень при достижении 100, остаток сохраняет"""
+# ========== СНИЖЕНИЕ НАСТРОЕНИЯ ОТ ВРЕМЕНИ ==========
+async def apply_happiness_decay(macaco_id: int) -> int:
+    """
+    Уменьшает настроение в зависимости от времени, прошедшего с last_happiness_decay.
+    Каждый полный час = -10 настроения (минимум 0).
+    Возвращает текущее настроение после применения.
+    """
     async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем текущий опыт и уровень
-        cursor = await db.execute(
-            'SELECT experience, level FROM macacos WHERE macaco_id = ?',
-            (macaco_id,)
-        )
+        # Получаем текущее настроение и время последнего обновления
+        cursor = await db.execute('''
+            SELECT happiness, last_happiness_decay FROM macacos WHERE macaco_id = ?
+        ''', (macaco_id,))
         row = await cursor.fetchone()
         if not row:
-            return
+            return 0
         
-        exp, level = row
-        exp += amount
+        happiness, last_decay_str = row
+        if not last_decay_str:
+            last_decay = datetime.now()
+        else:
+            last_decay = datetime.fromisoformat(last_decay_str)
         
-        # Повышаем уровень, пока опыта >= 100
-        while exp >= 100:
-            exp -= 100
-            level += 1
+        now = datetime.now()
+        delta = now - last_decay
+        hours_passed = int(delta.total_seconds() // 3600)  # полные часы
         
-        # Сохраняем
-        await db.execute(
-            'UPDATE macacos SET experience = ?, level = ? WHERE macaco_id = ?',
-            (exp, level, macaco_id)
-        )
+        if hours_passed > 0:
+            # Снижаем настроение на 10 за каждый час
+            happiness = max(0, happiness - hours_passed * 10)
+            # Обновляем last_happiness_decay, прибавляем часы (чтобы не терять остаток)
+            new_last_decay = last_decay + timedelta(hours=hours_passed)
+            
+            await db.execute('''
+                UPDATE macacos 
+                SET happiness = ?, last_happiness_decay = ?
+                WHERE macaco_id = ?
+            ''', (happiness, new_last_decay.isoformat(), macaco_id))
+            await db.commit()
+        
+        return happiness
+
+# ========== УМЕНЬШИТЬ НАСТРОЕНИЕ (ПРИ ПРОИГРЫШЕ) ==========
+async def decrease_happiness(macaco_id: int, amount: int) -> int:
+    """Уменьшает настроение на amount (минимум 0). Возвращает новое настроение."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute('''
+            SELECT happiness FROM macacos WHERE macaco_id = ?
+        ''', (macaco_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return 0
+        
+        new_happiness = max(0, row[0] - amount)
+        await db.execute('''
+            UPDATE macacos SET happiness = ? WHERE macaco_id = ?
+        ''', (new_happiness, macaco_id))
         await db.commit()
+        return new_happiness
+
+# ========== УСТАНОВИТЬ НАСТРОЕНИЕ (ПРОГУЛКА) ==========
+async def set_happiness(macaco_id: int, value: int) -> int:
+    """Устанавливает настроение (значение ограничивается 0-100)."""
+    value = max(0, min(100, value))
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('''
+            UPDATE macacos SET happiness = ? WHERE macaco_id = ?
+        ''', (value, macaco_id))
+        await db.commit()
+        return value
 
 # ========== КОРМЛЕНИЕ ==========
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
@@ -310,7 +376,28 @@ async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_w
         ''', (fighter1_id, fighter2_id, winner_id, bet_weight))
         await db.commit()
 
-# ========== ТОП (БЕЗ ДУБЛИКАТОВ) ==========
+# ========== ОПЫТ И УРОВНИ ==========
+async def add_experience(macaco_id: int, amount: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            'SELECT experience, level FROM macacos WHERE macaco_id = ?',
+            (macaco_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return
+        exp, level = row
+        exp += amount
+        while exp >= 100:
+            exp -= 100
+            level += 1
+        await db.execute(
+            'UPDATE macacos SET experience = ?, level = ? WHERE macaco_id = ?',
+            (exp, level, macaco_id)
+        )
+        await db.commit()
+
+# ========== ТОП ==========
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute('''
@@ -327,7 +414,7 @@ async def get_top_macacos(limit: int = 5) -> List[Tuple]:
         ''', (limit,))
         return await cursor.fetchall()
 
-# ========== ПОИСК ДЛЯ ИНЛАЙН-РЕЖИМА ==========
+# ========== ПОИСК ==========
 async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute('''
