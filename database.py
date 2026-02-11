@@ -91,22 +91,7 @@ async def get_or_create_user(user_data: Dict) -> bool:
 # ========== МАКАКИ ==========
 async def get_or_create_macaco(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_NAME) as db:
-        macaco = await db.execute_fetchall(
-            'SELECT * FROM macacos WHERE user_id = ?',
-            (user_id,)
-        )
-        if not macaco:
-            now = datetime.now().isoformat()
-            await db.execute('''
-                INSERT INTO macacos (user_id, last_fed, last_daily, weight)
-                VALUES (?, ?, ?, 10)
-            ''', (user_id, now, now))
-            await db.commit()
-            macaco = await db.execute_fetchall(
-                'SELECT * FROM macacos WHERE user_id = ?',
-                (user_id,)
-            )
-        # Берём самую свежую запись (максимальный id)
+        # Получаем самую свежую макаку пользователя
         cursor = await db.execute('''
             SELECT * FROM macacos 
             WHERE user_id = ? 
@@ -114,34 +99,63 @@ async def get_or_create_macaco(user_id: int) -> Dict:
             LIMIT 1
         ''', (user_id,))
         row = await cursor.fetchone()
-        if row:
-            return {
-                'id': row[0],
-                'user_id': row[1],
-                'name': row[2],
-                'health': row[3],
-                'hunger': row[4],
-                'happiness': row[5],
-                'level': row[6],
-                'exp': row[7],
-                'weight': row[8],
-                'last_fed': row[9],
-                'last_daily': row[10]
-            }
-        # fallback
+        
+        if not row:
+            now = datetime.now().isoformat()
+            await db.execute('''
+                INSERT INTO macacos (user_id, last_fed, last_daily, weight)
+                VALUES (?, ?, ?, 10)
+            ''', (user_id, now, now))
+            await db.commit()
+            cursor = await db.execute('''
+                SELECT * FROM macacos 
+                WHERE user_id = ? 
+                ORDER BY macaco_id DESC 
+                LIMIT 1
+            ''', (user_id,))
+            row = await cursor.fetchone()
+        
         return {
-            'id': macaco[0][0],
-            'user_id': macaco[0][1],
-            'name': macaco[0][2],
-            'health': macaco[0][3],
-            'hunger': macaco[0][4],
-            'happiness': macaco[0][5],
-            'level': macaco[0][6],
-            'exp': macaco[0][7],
-            'weight': macaco[0][8],
-            'last_fed': macaco[0][9],
-            'last_daily': macaco[0][10]
+            'id': row[0],
+            'user_id': row[1],
+            'name': row[2],
+            'health': row[3],
+            'hunger': row[4],
+            'happiness': row[5],
+            'level': row[6],
+            'exp': row[7],
+            'weight': row[8],
+            'last_fed': row[9],
+            'last_daily': row[10]
         }
+
+# ========== ДОБАВЛЕНИЕ ОПЫТА И ПОВЫШЕНИЕ УРОВНЯ ==========
+async def add_experience(macaco_id: int, amount: int):
+    """Добавляет опыт, повышает уровень при достижении 100, остаток сохраняет"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Получаем текущий опыт и уровень
+        cursor = await db.execute(
+            'SELECT experience, level FROM macacos WHERE macaco_id = ?',
+            (macaco_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return
+        
+        exp, level = row
+        exp += amount
+        
+        # Повышаем уровень, пока опыта >= 100
+        while exp >= 100:
+            exp -= 100
+            level += 1
+        
+        # Сохраняем
+        await db.execute(
+            'UPDATE macacos SET experience = ?, level = ? WHERE macaco_id = ?',
+            (exp, level, macaco_id)
+        )
+        await db.commit()
 
 # ========== КОРМЛЕНИЕ ==========
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
@@ -296,11 +310,8 @@ async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_w
         ''', (fighter1_id, fighter2_id, winner_id, bet_weight))
         await db.commit()
 
-# ========== ТОП (ИСПРАВЛЕННЫЙ, БЕЗ ДУБЛИКАТОВ) ==========
+# ========== ТОП (БЕЗ ДУБЛИКАТОВ) ==========
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
-    """
-    Возвращает топ макак по весу – только по одной на пользователя (самую свежую)
-    """
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute('''
             SELECT m.name, m.weight, m.level, u.username 
