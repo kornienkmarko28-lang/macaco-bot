@@ -446,6 +446,89 @@ async def find_fight_callback(callback: CallbackQuery):
     
     await callback.answer()
 
+@dp.callback_query(F.data.startswith("bet_"))
+async def bet_selection_callback(callback: CallbackQuery):
+    # Формат callback_data: "bet_{amount}_{opponent_id}"
+    parts = callback.data.split("_")
+    if len(parts) != 3:
+        await callback.answer("❌ Ошибка в данных ставки")
+        return
+
+    try:
+        bet_amount = int(parts[1])
+        opponent_id = int(parts[2])
+        user_id = callback.from_user.id
+
+        # Получаем макаку пользователя
+        user_macaco = await db.get_or_create_macaco(user_id)
+
+        # Проверяем, может ли макака сделать ставку
+        can_bet, msg = await db.can_make_bet(user_macaco['id'], bet_amount)
+        if not can_bet:
+            await callback.message.edit_text(
+                f"❌ {msg}",
+                reply_markup=kb.main_menu_kb()
+            )
+            await callback.answer()
+            return
+
+        # Проверяем вес соперника
+        async with aiosqlite.connect(db.DB_NAME) as conn:
+            cursor = await conn.execute(
+                'SELECT weight FROM macacos WHERE macaco_id = ?',
+                (opponent_id,)
+            )
+            opponent_data = await cursor.fetchone()
+
+        if not opponent_data:
+            await callback.message.edit_text(
+                "❌ Соперник больше не доступен",
+                reply_markup=kb.main_menu_kb()
+            )
+            await callback.answer()
+            return
+
+        opponent_weight = opponent_data[0]
+
+        if opponent_weight < bet_amount:
+            await callback.message.edit_text(
+                f"❌ У соперника недостаточно веса!\n"
+                f"Вес соперника: {opponent_weight} кг\n"
+                f"Ваша ставка: {bet_amount} кг",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb.main_menu_kb()
+            )
+            await callback.answer()
+            return
+
+        # Показываем экран подтверждения боя
+        confirm_text = (
+            f"🥊 <b>Подтверждение боя</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🐒 <b>Вы:</b> {user_macaco['name']}\n"
+            f"🏋️ Вес: {user_macaco['weight']} кг\n"
+            f"💰 Ставка: {bet_amount} кг\n\n"
+            f"🥊 <b>Соперник:</b> (ID: {opponent_id})\n"
+            f"🏋️ Вес: {opponent_weight} кг\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Победитель забирает {bet_amount} кг у проигравшего!</i>"
+        )
+
+        await callback.message.edit_text(
+            confirm_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb.fight_confirmation_kb(opponent_id, bet_amount)
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка в bet_selection_callback: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при выборе ставки",
+            reply_markup=kb.main_menu_kb()
+        )
+
+    await callback.answer()
+    
 @dp.callback_query(F.data.startswith("start_fight_"))
 async def start_fight_callback(callback: CallbackQuery):
     parts = callback.data.split("_")
@@ -739,3 +822,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
