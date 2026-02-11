@@ -60,6 +60,26 @@ challenge_counter = 0
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
+async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", parse_mode=None):
+    """Универсальная отправка гифки с fallback на текст"""
+    try:
+        gif_info = cfg.get_gif_info(gif_type, gif_name)
+        if gif_info and cfg.check_gif_exists(gif_type, gif_name):
+            animation = FSInputFile(gif_info['path'])
+            await bot.send_animation(
+                chat_id,
+                animation,
+                caption=caption or gif_info.get('caption', ''),
+                parse_mode=parse_mode
+            )
+            return True
+        else:
+            logger.warning(f"Гифка не найдена: {gif_type}/{gif_name}")
+            return False
+    except Exception as e:
+        logger.error(f"Ошибка при отправке гифки {gif_type}/{gif_name}: {e}")
+        return False
+
 async def show_my_macaco(user_id: int, source):
     """Показать информацию о макаке пользователя"""
     try:
@@ -176,6 +196,7 @@ async def start_command(message: Message):
         "• Анимация для каждого действия\n"
         "• ✏️ /rename — дай имя своей макаке!\n"
         "• ⚔️ Вызов на бой — честные поединки с подтверждением\n"
+        "• 📈 Уровни: опыт → 100 → +1 уровень\n"
         "\n"
         "👇 <b>Выбери действие:</b>"
     )
@@ -382,28 +403,18 @@ async def feed_with_food_callback(callback: CallbackQuery):
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Отправка гифки (если есть)
+        # Отправка гифки (с улучшенной обработкой)
         gif_types = {1: 'banana', 2: 'meat', 3: 'cake', 4: 'salad'}
-        gif_type = gif_types.get(food_id, 'banana')
-        gif_info = cfg.get_gif_info('feeding', gif_type)
+        gif_name = gif_types.get(food_id, 'banana')
+        gif_sent = await send_gif(
+            callback.message.chat.id,
+            'feeding',
+            gif_name,
+            caption=f"Текущий вес: <b>{macaco['weight']} кг</b>",
+            parse_mode=ParseMode.HTML
+        )
         
-        try:
-            if gif_info and cfg.check_gif_exists('feeding', gif_type):
-                animation = FSInputFile(gif_info['path'])
-                await callback.message.answer_animation(
-                    animation,
-                    caption=f"{gif_info['caption']}\n"
-                            f"Текущий вес: <b>{macaco['weight']} кг</b>",
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                await callback.message.answer(
-                    f"{food_info['name']} — макака поела!\n"
-                    f"Текущий вес: <b>{macaco['weight']} кг</b>",
-                    parse_mode=ParseMode.HTML
-                )
-        except Exception as e:
-            logger.warning(f"Не удалось отправить гифку: {e}")
+        if not gif_sent:
             await callback.message.answer(
                 f"{food_info['name']} — макака поела!\n"
                 f"Текущий вес: <b>{macaco['weight']} кг</b>",
@@ -452,26 +463,16 @@ async def daily_reward_callback(callback: CallbackQuery):
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Гифка награды (если есть)
-        try:
-            gif_info = cfg.get_gif_info('daily', 'reward')
-            if gif_info and cfg.check_gif_exists('daily', 'reward'):
-                animation = FSInputFile(gif_info['path'])
-                await callback.message.answer_animation(
-                    animation,
-                    caption=f"{gif_info['caption']}\n"
-                            f"Текущий вес: <b>{macaco['weight']} кг</b>",
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                await callback.message.answer(
-                    "🎁 <b>Ежедневная награда получена!</b>\n"
-                    f"+1 кг к весу!\n"
-                    f"Текущий вес: <b>{macaco['weight']} кг</b>",
-                    parse_mode=ParseMode.HTML
-                )
-        except Exception as e:
-            logger.warning(f"Не удалось отправить гифку награды: {e}")
+        # Гифка награды
+        gif_sent = await send_gif(
+            callback.message.chat.id,
+            'daily',
+            'reward',
+            caption=f"Текущий вес: <b>{macaco['weight']} кг</b>",
+            parse_mode=ParseMode.HTML
+        )
+        
+        if not gif_sent:
             await callback.message.answer(
                 "🎁 <b>Ежедневная награда получена!</b>\n"
                 f"+1 кг к весу!\n"
@@ -502,27 +503,30 @@ async def walk_macaco_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     try:
+        # Ограничиваем настроение 100
         async with aiosqlite.connect(db.DB_NAME) as conn:
-            await conn.execute(
-                'UPDATE macacos SET happiness = happiness + 15 WHERE user_id = ?',
-                (user_id,)
-            )
+            await conn.execute('''
+                UPDATE macacos 
+                SET happiness = MIN(100, happiness + 15) 
+                WHERE user_id = ?
+            ''', (user_id,))
             await conn.commit()
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Гифка прогулки (если есть)
-        try:
-            gif_info = cfg.get_gif_info('walk', 'walking')
-            if gif_info and cfg.check_gif_exists('walk', 'walking'):
-                anim = FSInputFile(gif_info['path'])
-                await callback.message.answer_animation(
-                    anim,
-                    caption=gif_info['caption'],
-                    parse_mode=ParseMode.HTML
-                )
-        except Exception as e:
-            logger.warning(f"Не удалось отправить гифку прогулки: {e}")
+        # Гифка прогулки
+        gif_sent = await send_gif(
+            callback.message.chat.id,
+            'walk',
+            'walking',
+            parse_mode=ParseMode.HTML
+        )
+        
+        if not gif_sent:
+            await callback.message.answer(
+                "🚶 <b>Прогулка успешна!</b>",
+                parse_mode=ParseMode.HTML
+            )
         
         await callback.message.edit_text(
             f"🚶 <b>Прогулка успешна!</b>\n\n"
@@ -705,7 +709,6 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
 
     global challenge_counter
     challenge_counter += 1
-    # ВАЖНО: используем ДЕФИС, а не подчёркивание!
     challenge_id = f"{user_id}-{opponent_id}-{challenge_counter}"
 
     challenger_name = user_macaco['name']
@@ -842,18 +845,13 @@ async def accept_fight_callback(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # Начинаем бой
-    try:
-        gif_info = cfg.get_gif_info('fight', 'start')
-        if gif_info and cfg.check_gif_exists('fight', 'start'):
-            anim = FSInputFile(gif_info['path'])
-            await callback.message.answer_animation(
-                anim,
-                caption=gif_info['caption'],
-                parse_mode=ParseMode.HTML
-            )
-    except Exception as e:
-        logger.warning(f"Не удалось отправить гифку начала боя: {e}")
+    # Гифка начала боя
+    await send_gif(
+        callback.message.chat.id,
+        'fight',
+        'start',
+        parse_mode=ParseMode.HTML
+    )
 
     winner_id = random.choice([challenger_macaco['id'], opponent_macaco['id']])
     loser_id = opponent_macaco['id'] if winner_id == challenger_macaco['id'] else challenger_macaco['id']
@@ -862,12 +860,7 @@ async def accept_fight_callback(callback: CallbackQuery):
     await db.record_fight(challenger_macaco['id'], opponent_macaco['id'], winner_id, bet)
 
     exp_gain = 25 if winner_id == challenger_macaco['id'] else 10
-    async with aiosqlite.connect(db.DB_NAME) as conn:
-        await conn.execute(
-            'UPDATE macacos SET experience = experience + ? WHERE macaco_id = ?',
-            (exp_gain, winner_id)
-        )
-        await conn.commit()
+    await db.add_experience(winner_id, exp_gain)
 
     challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
     opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
@@ -883,17 +876,13 @@ async def accept_fight_callback(callback: CallbackQuery):
         result_gif = 'lose'
         result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {loser_name} проиграл {winner_name} и потерял {bet} кг."
 
-    try:
-        gif_info = cfg.get_gif_info('fight', result_gif)
-        if gif_info and cfg.check_gif_exists('fight', result_gif):
-            anim = FSInputFile(gif_info['path'])
-            await callback.message.answer_animation(
-                anim,
-                caption=gif_info['caption'],
-                parse_mode=ParseMode.HTML
-            )
-    except Exception as e:
-        logger.warning(f"Не удалось отправить гифку результата: {e}")
+    # Гифка результата
+    await send_gif(
+        callback.message.chat.id,
+        'fight',
+        result_gif,
+        parse_mode=ParseMode.HTML
+    )
 
     result_msg = (
         f"{'🎉' if winner_id == challenger_macaco['id'] else '😔'} <b>БОЙ ЗАВЕРШЁН!</b>\n"
@@ -994,7 +983,7 @@ async def inline_mode(inline_query: InlineQuery):
             result = InlineQueryResultArticle(
                 id="1",
                 title=f"🐒 {macaco['name']}",
-                description=f"Вес: {macaco['weight']} кг | Ур. {macaco['level']}",
+                description=f"Вес: {macaco['weight']} кг | Ур. {macaco['level']} | Опыт: {macaco['exp']}/100",
                 input_message_content=InputTextMessageContent(
                     message_text=(
                         f"🐒 <b>{macaco['name']}</b>\n"
@@ -1043,7 +1032,7 @@ async def inline_mode(inline_query: InlineQuery):
                 text = "🏆 <b>ТОП-3 МАКАК:</b>\n"
                 medals = ["🥇", "🥈", "🥉"]
                 for idx, (name, weight, level, username) in enumerate(top):
-                    text += f"{medals[idx]} {name} — {weight} кг\n"
+                    text += f"{medals[idx]} {name} — {weight} кг (ур. {level})\n"
             else:
                 text = "🏆 Топ пуст!"
             result = InlineQueryResultArticle(
