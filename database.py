@@ -319,8 +319,13 @@ async def set_happiness(macaco_id: int, value: int) -> int:
         return value
 
 async def walk_macaco(macaco_id: int) -> int:
+    """Прогулка: восстанавливает настроение до 100. Здоровье не меняется."""
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('UPDATE macacos SET happiness = 100, health = MIN(100, health + 15) WHERE macaco_id = ?', (macaco_id,))
+        await db.execute('''
+            UPDATE macacos 
+            SET happiness = 100
+            WHERE macaco_id = ?
+        ''', (macaco_id,))
         await db.commit()
         return 100
 
@@ -404,3 +409,4 @@ async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
         ]
 
 asyncio.run(create_tables())
+
