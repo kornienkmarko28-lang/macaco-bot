@@ -25,28 +25,19 @@ import database as db
 import keyboards as kb
 import config as cfg
 
-# ========== ЗАГРУЗКА ТОКЕНА ==========
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
-
 if not TOKEN:
-    print("❌ ОШИБКА: Токен не найден в переменных окружения!")
-    print("💡 Убедитесь, что в Bothost добавлена переменная BOT_TOKEN")
+    print("❌ ОШИБКА: Токен не найден!")
     exit(1)
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ========== FSM ==========
 class Rename(StatesGroup):
     waiting_for_name = State()
 
@@ -54,45 +45,37 @@ class Challenge(StatesGroup):
     waiting_for_opponent = State()
     waiting_for_bet = State()
 
-# ========== ХРАНИЛИЩЕ АКТИВНЫХ ВЫЗОВОВ ==========
 active_challenges = {}
 challenge_counter = 0
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-
+# ---------- Отправка гифок (кроме еды) ----------
 async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", parse_mode=None):
-    """Универсальная отправка гифки с fallback на текст"""
     try:
         gif_info = cfg.get_gif_info(gif_type, gif_name)
         if gif_info and cfg.check_gif_exists(gif_type, gif_name):
             animation = FSInputFile(gif_info['path'])
-            await bot.send_animation(
-                chat_id,
-                animation,
-                caption=caption or gif_info.get('caption', ''),
-                parse_mode=parse_mode
-            )
+            await bot.send_animation(chat_id, animation, caption=caption or gif_info.get('caption', ''), parse_mode=parse_mode)
             return True
         else:
             logger.warning(f"Гифка не найдена: {gif_type}/{gif_name}")
             return False
     except Exception as e:
-        logger.error(f"Ошибка при отправке гифки {gif_type}/{gif_name}: {e}")
+        logger.error(f"Ошибка гифки {gif_type}/{gif_name}: {e}")
         return False
 
+# ---------- Показать макаку ----------
 async def show_my_macaco(user_id: int, source):
-    """Показать информацию о макаке пользователя (с применением распада настроения)"""
     try:
         if isinstance(source, CallbackQuery):
             await source.answer()
-        
         macaco = await db.get_or_create_macaco(user_id)
         await db.apply_happiness_decay(macaco['id'])
+        await db.apply_hunger_decay(macaco['id'])
+        await db.apply_health_decay(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
-        
         can_daily, daily_time = await db.can_get_daily(macaco['id'])
         daily_status = "✅ Доступна" if can_daily else f"⏳ Через: {daily_time}"
-        
+        hunger_status = "😋 Сыт" if macaco['hunger'] < 30 else "😐 Голоден" if macaco['hunger'] < 70 else "🆘 Очень голоден"
         info_text = (
             f"🐒 <b>{macaco['name']}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -100,32 +83,21 @@ async def show_my_macaco(user_id: int, source):
             f"⭐ <b>Уровень:</b> {macaco['level']}\n"
             f"📊 <b>Опыт:</b> {macaco['exp']}/100\n"
             f"❤️ <b>Здоровье:</b> {macaco['health']}/100\n"
-            f"🍖 <b>Сытость:</b> {100 - macaco['hunger']}/100\n"
+            f"🍖 <b>Сытость:</b> {100 - macaco['hunger']}/100 ({hunger_status})\n"
             f"😊 <b>Настроение:</b> {macaco['happiness']}/100\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🎁 <b>Ежедневная награда:</b> {daily_status}\n"
             f"✏️ /rename — сменить имя"
         )
-        
         markup = kb.main_menu_kb()
-        
         if isinstance(source, CallbackQuery):
             try:
-                await source.message.edit_text(
-                    info_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=markup
-                )
+                await source.message.edit_text(info_text, parse_mode=ParseMode.HTML, reply_markup=markup)
             except TelegramBadRequest as e:
                 if "message is not modified" not in str(e):
                     raise e
         else:
-            await source.answer(
-                info_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=markup
-            )
-            
+            await source.answer(info_text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except Exception as e:
         logger.error(f"Ошибка в show_my_macaco: {e}")
         error_text = "❌ Ошибка при получении данных макаки"
@@ -134,123 +106,127 @@ async def show_my_macaco(user_id: int, source):
         else:
             await source.answer(error_text)
 
+# ---------- Топ игроков ----------
 async def show_top_players(callback: CallbackQuery):
-    """Показать топ игроков"""
     try:
-        top_macacos = await db.get_top_macacos(5)
-        
-        if not top_macacos:
+        top = await db.get_top_macacos(5)
+        if not top:
             text = "📊 <b>Топ пуст!</b>\nБудьте первым!"
             markup = kb.main_menu_kb()
         else:
             lines = ["🏆 <b>ТОП-5 МАКАК</b> 🏆\n", "━━━━━━━━━━━━━━━━━━━━"]
             medals = ["🥇", "🥈", "🥉", "4.", "5."]
-            
-            for idx, (name, weight, level, username) in enumerate(top_macacos[:5]):
+            for idx, (name, weight, level, username) in enumerate(top[:5]):
                 medal = medals[idx]
                 user_display = f"@{username}" if username else "Без юзернейма"
-                lines.append(
-                    f"{medal} <b>{name}</b>\n"
-                    f"   🏋️ {weight} кг | ⭐ Ур. {level}\n"
-                    f"   👤 {user_display}\n"
-                )
+                lines.append(f"{medal} <b>{name}</b>\n   🏋️ {weight} кг | ⭐ Ур. {level}\n   👤 {user_display}\n")
             lines.append("━━━━━━━━━━━━━━━━━━━━")
             text = "\n".join(lines)
             markup = kb.back_to_menu_kb()
-        
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=markup
-        )
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
         await callback.answer()
     except Exception as e:
-        logger.error(f"Ошибка в show_top_players: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при загрузке топа",
-            reply_markup=kb.main_menu_kb()
-        )
+        logger.error(f"Ошибка топа: {e}")
+        await callback.message.edit_text("❌ Ошибка", reply_markup=kb.main_menu_kb())
         await callback.answer()
 
-# ========== КОМАНДЫ ==========
-
+# ---------- КОМАНДЫ ----------
 @dp.message(CommandStart())
 async def start_command(message: Message):
     user = message.from_user
-    
-    user_data = {
-        'id': user.id,
-        'username': user.username,
-        'first_name': user.first_name,
-        'last_name': user.last_name
-    }
+    user_data = {'id': user.id, 'username': user.username, 'first_name': user.first_name, 'last_name': user.last_name}
     await db.get_or_create_user(user_data)
     macaco = await db.get_or_create_macaco(user.id)
     await db.apply_happiness_decay(macaco['id'])
-    
+    await db.apply_hunger_decay(macaco['id'])
+    await db.apply_health_decay(macaco['id'])
     bot_username = (await bot.get_me()).username
-    
     welcome_text = (
         "🎮 <b>Добро пожаловать в Боевые Макаки PRO!</b> 🐒\n\n"
-        "<b>Новые возможности:</b>\n"
+        "<b>Что нового:</b>\n"
         "• 4 вида еды с разными эффектами\n"
-        "• Ежедневная награда (+1 кг каждый день)\n"
-        f"• Инлайн-режим — пишите @{bot_username} команда\n"
-        "• Анимация для каждого действия\n"
-        "• ✏️ /rename — дай имя своей макаке!\n"
-        "• ⚔️ Вызов на бой — честные поединки с подтверждением\n"
+        "• Ежедневная награда (+1 кг, +❤️, +😊)\n"
+        f"• Инлайн-режим — @{bot_username} команда\n"
+        "• ✏️ /rename — дай имя макаке!\n"
+        "• ⚔️ Вызов на бой с подтверждением\n"
         "• 😊 Настроение: падает со временем и при проигрыше\n"
-        "• 🚶 Прогулка — восстанавливает настроение до 100!\n"
-        "\n"
+        "• 🚶 Прогулка — восстанавливает настроение и здоровье\n"
+        "• 🍖 Сытость: падает каждые 2 часа, влияет на бой и здоровье\n"
+        "• ❤️ Здоровье: падает при голоде и в боях\n\n"
         "👇 <b>Выбери действие:</b>"
     )
-    
-    await message.answer(
-        welcome_text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.main_menu_kb()
-    )
+    await message.answer(welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_kb())
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
     bot_username = (await bot.get_me()).username
     help_text = (
-        "📖 <b>Помощь по игре</b>\n\n"
-        "<b>Основные команды:</b>\n"
-        "• /start — начать игру\n"
-        "• /help — эта справка\n"
-        "• /top — топ игроков\n"
-        "• /my — моя макака\n"
-        "• /rename — сменить имя макаке\n\n"
-        "<b>Боевая система:</b>\n"
-        "1. Нажмите «Вызвать на бой» в меню.\n"
-        "2. Выберите соперника из списка.\n"
-        "3. Выберите ставку (1, 3, 5, 10 кг).\n"
-        "4. Соперник получит вызов и должен принять в течение 60 секунд.\n"
-        "5. Если соперник принимает — начинается бой!\n"
-        "6. При проигрыше настроение падает на 20.\n\n"
-        "<b>Настроение:</b>\n"
-        "• Падает на 10 за каждый час бездействия.\n"
-        "• При 0 макака отказывается есть.\n"
-        "• Прогулка восстанавливает настроение до 100.\n\n"
-        "<b>Инлайн-режим:</b>\n"
-        f"Начните писать @{bot_username} в любом чате и выберите команду:\n"
-        "• info — информация о макаке\n"
-        "• feed — покормить\n"
+        "📖 <b>ПОМОЩЬ ПО ИГРЕ — БОЕВЫЕ МАКАКИ PRO</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        "<b>🐒 1. ОСНОВНЫЕ КОМАНДЫ</b>\n"
+        "• /start — начать игру (создать макаку)\n"
+        "• /my — информация о твоей макаке\n"
+        "• /rename — сменить имя макаке\n"
+        "• /top — топ-5 самых тяжёлых макак\n"
+        "• /help — эта справка\n\n"
+        
+        "<b>🍌 2. ЕДА И КОРМЛЕНИЕ</b>\n"
+        "• Каждая еда имеет КД (кулдаун) и даёт разные бонусы.\n"
+        "• При сытости = 0 макака теряет здоровье.\n"
+        "• При настроении = 0 макака отказывается есть.\n\n"
+        "┌─────────────────────────────────────┐\n"
+        "│ 🍌 Банан   │ +1 кг │ +10 😊 │ -30 🍖 │ +10 ❤️ │ КД 5ч │\n"
+        "│ 🥩 Мясо    │ +3 кг │  +5 😊 │ -50 🍖 │ +15 ❤️ │ КД 8ч │\n"
+        "│ 🍰 Торт    │ +5 кг │ +20 😊 │ -70 🍖 │  +5 ❤️ │ КД12ч │\n"
+        "│ 🥗 Салат   │ +2 кг │ +15 😊 │ -40 🍖 │ +12 ❤️ │ КД 6ч │\n"
+        "└─────────────────────────────────────┘\n\n"
+        
+        "<b>🎁 3. ЕЖЕДНЕВНАЯ НАГРАДА</b>\n"
+        "• +1 кг веса, +5 к настроению, +5 к здоровью.\n"
+        "• Доступна раз в сутки.\n\n"
+        
+        "<b>🚶 4. ПРОГУЛКА</b>\n"
+        "• Восстанавливает настроение до 100%.\n"
+        "• Даёт +15 к здоровью (но не выше 100).\n"
+        "• Поднимает настроение даже если макака расстроена.\n\n"
+        
+        "<b>⚔️ 5. БОЕВАЯ СИСТЕМА</b>\n"
+        "• <b>Вызов:</b> «Вызвать на бой» → выбрать соперника → ставку.\n"
+        "• <b>Принятие:</b> соперник получает уведомление и 60 сек на ответ.\n"
+        "• <b>Условия боя:</b>\n"
+        "  - Здоровье > 0 и сытость < 70 у обоих.\n"
+        "  - Вес ≥ ставки (1,3,5,10 кг).\n"
+        "• <b>Результат:</b>\n"
+        "  - Победитель: +25 опыта, забирает вес ставки.\n"
+        "  - Проигравший: +10 опыта, теряет вес, -20 😊, -10 ❤️.\n\n"
+        
+        "<b>📊 6. ХАРАКТЕРИСТИКИ МАКАКИ</b>\n"
+        "┌─────────────────────────────────────┐\n"
+        "│ 🏋️ Вес      │ растёт от еды и побед, падает от проигрышей │\n"
+        "│ ⭐ Уровень  │ +1 уровень за каждые 100 опыта             │\n"
+        "│ 📊 Опыт    │ +25 победа, +10 поражение                 │\n"
+        "│ ❤️ Здоровье│ падает: голод (-5/ч), проигрыш (-10)      │\n"
+        "│            │ растёт: еда, прогулка, ежедневка         │\n"
+        "│ 🍖 Сытость │ падает: каждые 2ч (-5)                   │\n"
+        "│            │ растёт: еда (разные значения)           │\n"
+        "│ 😊 Настрое-│ падает: время (-10/ч), проигрыш (-20)   │\n"
+        "│    ние     │ растёт: еда, прогулка (до 100), ежедневка│\n"
+        "└─────────────────────────────────────┘\n"
+        "• При сытости = 0 макака теряет здоровье (голод).\n"
+        "• При настроении = 0 макака отказывается от еды.\n\n"
+        
+        "<b>💬 7. ИНЛАЙН-РЕЖИМ</b>\n"
+        f"Начните писать @{bot_username} в любом чате:\n"
+        "• info — информация о вашей макаке\n"
+        "• feed — меню кормления\n"
         "• fight — список соперников\n"
         "• top — топ игроков\n\n"
-        "<b>Виды еды:</b>\n"
-        "• 🍌 Банан: +1 кг, КД 5ч, +10 😊\n"
-        "• 🥩 Мясо: +3 кг, КД 8ч, +5 😊\n"
-        "• 🍰 Торт: +5 кг, КД 12ч, +20 😊\n"
-        "• 🥗 Салат: +2 кг, КД 6ч, +15 😊"
+        
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🐒 <b>Желаем весёлых боёв и вкусных бананов!</b>"
     )
-    
-    await message.answer(
-        help_text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.back_to_menu_kb()
-    )
+    await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=kb.back_to_menu_kb())
 
 @dp.message(Command("my"))
 async def my_macaco_command(message: Message):
@@ -259,44 +235,32 @@ async def my_macaco_command(message: Message):
 @dp.message(Command("top"))
 async def top_command(message: Message):
     try:
-        top_macacos = await db.get_top_macacos(5)
-        
-        if not top_macacos:
+        top = await db.get_top_macacos(5)
+        if not top:
             text = "📊 <b>Топ пуст!</b>\nБудьте первым!"
             markup = kb.main_menu_kb()
         else:
             lines = ["🏆 <b>ТОП-5 МАКАК</b> 🏆\n", "━━━━━━━━━━━━━━━━━━━━"]
             medals = ["🥇", "🥈", "🥉", "4.", "5."]
-            
-            for idx, (name, weight, level, username) in enumerate(top_macacos[:5]):
+            for idx, (name, weight, level, username) in enumerate(top[:5]):
                 medal = medals[idx]
                 user_display = f"@{username}" if username else "Без юзернейма"
-                lines.append(
-                    f"{medal} <b>{name}</b>\n"
-                    f"   🏋️ {weight} кг | ⭐ Ур. {level}\n"
-                    f"   👤 {user_display}\n"
-                )
+                lines.append(f"{medal} <b>{name}</b>\n   🏋️ {weight} кг | ⭐ Ур. {level}\n   👤 {user_display}\n")
             lines.append("━━━━━━━━━━━━━━━━━━━━")
             text = "\n".join(lines)
             markup = kb.back_to_menu_kb()
-        
-        await message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=markup
-        )
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except Exception as e:
-        logger.error(f"Ошибка в top_command: {e}")
-        await message.answer("❌ Ошибка при загрузке топа")
+        logger.error(f"Ошибка top: {e}")
+        await message.answer("❌ Ошибка")
 
 @dp.message(Command("rename"))
 async def rename_command(message: Message, state: FSMContext):
     user_id = message.from_user.id
     macaco = await db.get_or_create_macaco(user_id)
-    
     await message.answer(
-        f"🐒 Текущее имя вашей макаки: <b>{macaco['name']}</b>\n\n"
-        f"✏️ Напишите новое имя (до 20 символов, можно использовать буквы, цифры, пробел, дефис и подчёркивание):",
+        f"🐒 Текущее имя: <b>{macaco['name']}</b>\n\n"
+        f"✏️ Напишите новое имя (до 20 символов, буквы/цифры/пробел/дефис/подчёркивание):",
         parse_mode=ParseMode.HTML
     )
     await state.set_state(Rename.waiting_for_name)
@@ -305,33 +269,22 @@ async def rename_command(message: Message, state: FSMContext):
 async def process_new_name(message: Message, state: FSMContext):
     new_name = message.text.strip()
     user_id = message.from_user.id
-    
     if len(new_name) > 20:
-        await message.answer("❌ Имя слишком длинное! Максимум 20 символов.\nПопробуйте ещё раз:")
+        await message.answer("❌ Слишком длинное! Максимум 20 символов.")
         return
     if len(new_name) < 2:
-        await message.answer("❌ Имя слишком короткое! Минимум 2 символа.\nПопробуйте ещё раз:")
+        await message.answer("❌ Слишком короткое! Минимум 2 символа.")
         return
     if not all(c.isalnum() or c in ' _-' for c in new_name):
-        await message.answer("❌ Можно использовать только буквы, цифры, пробел, дефис и подчёркивание.\nПопробуйте ещё раз:")
+        await message.answer("❌ Недопустимые символы.")
         return
-    
     async with aiosqlite.connect(db.DB_NAME) as conn:
-        await conn.execute(
-            'UPDATE macacos SET name = ? WHERE user_id = ?',
-            (new_name, user_id)
-        )
+        await conn.execute('UPDATE macacos SET name = ? WHERE user_id = ?', (new_name, user_id))
         await conn.commit()
-    
-    await message.answer(
-        f"✅ Имя успешно изменено на <b>{new_name}</b>!",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.main_menu_kb()
-    )
+    await message.answer(f"✅ Имя изменено на <b>{new_name}</b>!", parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_kb())
     await state.clear()
 
-# ========== ОБРАБОТЧИКИ КНОПОК ==========
-
+# ---------- КНОПКИ ----------
 @dp.callback_query(F.data == "my_macaco")
 async def my_macaco_callback(callback: CallbackQuery):
     await show_my_macaco(callback.from_user.id, callback)
@@ -339,793 +292,502 @@ async def my_macaco_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "select_food")
 async def select_food_callback(callback: CallbackQuery):
     text = (
-        "🍽️ <b>Выберите еду для макаки:</b>\n\n"
-        "🍌 Банан: +1 кг, КД 5ч, +10 😊\n"
-        "🥩 Мясо: +3 кг, КД 8ч, +5 😊\n"
-        "🍰 Торт: +5 кг, КД 12ч, +20 😊\n"
-        "🥗 Салат: +2 кг, КД 6ч, +15 😊"
+        "🍽️ <b>Выберите еду:</b>\n\n"
+        "🍌 Банан: +1 кг, КД 5ч, +10 😊, -30 🍖, +10 ❤️\n"
+        "🥩 Мясо: +3 кг, КД 8ч, +5 😊, -50 🍖, +15 ❤️\n"
+        "🍰 Торт: +5 кг, КД 12ч, +20 😊, -70 🍖, +5 ❤️\n"
+        "🥗 Салат: +2 кг, КД 6ч, +15 😊, -40 🍖, +12 ❤️"
     )
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.food_selection_kb()
-    )
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.food_selection_kb())
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("food_"))
 async def food_info_callback(callback: CallbackQuery):
     food_id = int(callback.data.split("_")[1])
-    food_info = await db.get_food_info(food_id)
-    
-    if not food_info:
+    food = await db.get_food_info(food_id)
+    if not food:
         await callback.answer("❌ Еда не найдена")
         return
-    
     text = (
-        f"{food_info['name']}\n"
+        f"{food['name']}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏋️ <b>Прибавка веса:</b> +{food_info['weight_gain']} кг\n"
-        f"😊 <b>Радость:</b> +{food_info['happiness_gain']}\n"
-        f"🍖 <b>Сытость:</b> +{food_info['hunger_decrease']}\n"
-        f"⏳ <b>Кулдаун:</b> {food_info['cooldown_hours']} ч\n"
+        f"🏋️ +{food['weight_gain']} кг\n"
+        f"😊 +{food['happiness_gain']}\n"
+        f"🍖 -{food['hunger_decrease']}\n"
+        f"❤️ +{food['health_gain']}\n"
+        f"⏳ КД {food['cooldown_hours']} ч\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Покормить макаку этой едой?"
+        f"Покормить этой едой?"
     )
-    
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.food_info_kb(food_id)
-    )
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.food_info_kb(food_id))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("feed_"))
 async def feed_with_food_callback(callback: CallbackQuery):
     food_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
-    
     try:
         macaco = await db.get_or_create_macaco(user_id)
         await db.apply_happiness_decay(macaco['id'])
+        await db.apply_hunger_decay(macaco['id'])
+        await db.apply_health_decay(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
-        
         if macaco['happiness'] <= 0:
             await callback.message.edit_text(
-                "🥺 <b>Я расстроена…</b>\n"
-                "Сначала подними мне настроение прогулкой!",
+                "🥺 <b>Я расстроена…</b>\nСначала подними мне настроение прогулкой!",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb.main_menu_kb()
             )
             await callback.answer()
             return
-        
-        food_info = await db.get_food_info(food_id)
-        
-        if not food_info:
+        food = await db.get_food_info(food_id)
+        if not food:
             await callback.answer("❌ Еда не найдена")
             return
-        
         can_feed, time_left = await db.can_feed_food(macaco['id'], food_id)
-        
         if not can_feed:
             await callback.message.edit_text(
-                f"⏳ <b>Нельзя кормить этой едой!</b>\n\n"
-                f"До следующего кормления {food_info['name']}: {time_left}\n"
-                f"Выберите другую еду.",
+                f"⏳ <b>Нельзя кормить {food['name']}!</b>\nДо следующего раза: {time_left}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb.food_selection_kb()
             )
             await callback.answer()
             return
-        
-        success = await db.feed_macaco_with_food(macaco['id'], food_id)
-        if not success:
-            await callback.answer("❌ Ошибка при кормлении")
-            return
-        
+        await db.feed_macaco_with_food(macaco['id'], food_id)
         macaco = await db.get_or_create_macaco(user_id)
-        
-        gif_types = {1: 'banana', 2: 'meat', 3: 'cake', 4: 'salad'}
-        gif_name = gif_types.get(food_id, 'banana')
-        gif_sent = await send_gif(
-            callback.message.chat.id,
-            'feeding',
-            gif_name,
-            caption=f"Текущий вес: <b>{macaco['weight']} кг</b>",
+        # НЕТ ГИФКИ — только текст
+        await callback.message.answer(
+            f"🍽️ <b>Макака поела {food['name']}!</b>\n"
+            f"🏋️ Вес: +{food['weight_gain']} кг (теперь {macaco['weight']} кг)\n"
+            f"❤️ Здоровье: +{food['health_gain']} (теперь {macaco['health']}/100)\n"
+            f"🍖 Сытость: -{food['hunger_decrease']} (теперь {100 - macaco['hunger']}/100)\n"
+            f"😊 Настроение: +{food['happiness_gain']} (теперь {macaco['happiness']}/100)",
             parse_mode=ParseMode.HTML
         )
-        
-        if not gif_sent:
-            await callback.message.answer(
-                f"{food_info['name']} — макака поела!\n"
-                f"Текущий вес: <b>{macaco['weight']} кг</b>",
-                parse_mode=ParseMode.HTML
-            )
-        
         await callback.message.edit_text(
             f"✅ <b>Макака накормлена!</b>\n\n"
-            f"🍽️ {food_info['name']}\n"
+            f"🍽️ {food['name']}\n"
             f"🏋️ Вес: <b>{macaco['weight']} кг</b>\n"
+            f"❤️ Здоровье: {macaco['health']}/100\n"
+            f"🍖 Сытость: {100 - macaco['hunger']}/100\n"
             f"😊 Настроение: {macaco['happiness']}/100",
             parse_mode=ParseMode.HTML,
             reply_markup=kb.main_menu_kb()
         )
-        
     except Exception as e:
-        logger.error(f"Ошибка в feed_with_food_callback: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при кормлении",
-            reply_markup=kb.main_menu_kb()
-        )
-    
+        logger.error(f"Ошибка кормления: {e}")
+        await callback.message.edit_text("❌ Ошибка при кормлении", reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "daily_reward")
 async def daily_reward_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
-    
     try:
         macaco = await db.get_or_create_macaco(user_id)
         await db.apply_happiness_decay(macaco['id'])
+        await db.apply_hunger_decay(macaco['id'])
+        await db.apply_health_decay(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
-        
-        can_daily, time_left = await db.can_get_daily(macaco['id'])
-        
-        if not can_daily:
+        can, time_left = await db.can_get_daily(macaco['id'])
+        if not can:
             await callback.message.edit_text(
-                f"⏳ <b>Ежедневная награда ещё не доступна!</b>\n\n"
-                f"Следующая награда через: <b>{time_left}</b>",
+                f"⏳ Награда ещё не доступна. Следующая через: {time_left}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb.main_menu_kb()
             )
             await callback.answer()
             return
-        
-        success = await db.give_daily_reward(macaco['id'])
-        if not success:
-            await callback.answer("❌ Ошибка при получении награды")
-            return
-        
+        await db.give_daily_reward(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
-        
-        gif_sent = await send_gif(
-            callback.message.chat.id,
-            'daily',
-            'reward',
-            caption=f"Текущий вес: <b>{macaco['weight']} кг</b>",
-            parse_mode=ParseMode.HTML
-        )
-        
-        if not gif_sent:
-            await callback.message.answer(
-                "🎁 <b>Ежедневная награда получена!</b>\n"
-                f"+1 кг к весу!\n"
-                f"Текущий вес: <b>{macaco['weight']} кг</b>",
-                parse_mode=ParseMode.HTML
-            )
-        
+        await send_gif(callback.message.chat.id, 'daily', 'reward',
+                       caption=f"Текущий вес: <b>{macaco['weight']} кг</b>", parse_mode=ParseMode.HTML)
         await callback.message.edit_text(
             f"✅ <b>Ежедневная награда получена!</b>\n\n"
-            f"🎁 +1 кг к весу\n"
-            f"😊 +5 к настроению\n"
+            f"🎁 +1 кг веса\n"
+            f"❤️ +5 здоровья\n"
+            f"😊 +5 настроения\n"
             f"🏋️ Текущий вес: <b>{macaco['weight']} кг</b>\n"
+            f"❤️ Здоровье: {macaco['health']}/100\n"
             f"😊 Настроение: {macaco['happiness']}/100",
             parse_mode=ParseMode.HTML,
             reply_markup=kb.main_menu_kb()
         )
-        
     except Exception as e:
-        logger.error(f"Ошибка в daily_reward_callback: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при получении награды",
-            reply_markup=kb.main_menu_kb()
-        )
-    
+        logger.error(f"Ошибка ежедневки: {e}")
+        await callback.message.edit_text("❌ Ошибка", reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "walk_macaco")
 async def walk_macaco_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
-    
     try:
         macaco = await db.get_or_create_macaco(user_id)
         await db.apply_happiness_decay(macaco['id'])
-        await db.set_happiness(macaco['id'], 100)
+        await db.apply_hunger_decay(macaco['id'])
+        await db.apply_health_decay(macaco['id'])
+        await db.walk_macaco(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
-        
-        gif_sent = await send_gif(
-            callback.message.chat.id,
-            'walk',
-            'walking',
-            parse_mode=ParseMode.HTML
-        )
-        
-        if not gif_sent:
-            await callback.message.answer(
-                "🚶 <b>Прогулка успешна!</b>",
-                parse_mode=ParseMode.HTML
-            )
-        
+        await send_gif(callback.message.chat.id, 'walk', 'walking', parse_mode=ParseMode.HTML)
         await callback.message.edit_text(
             f"🚶 <b>Прогулка успешна!</b>\n\n"
-            f"😊 Настроение полностью восстановлено!\n"
-            f"Текущее настроение: <b>{macaco['happiness']}/100</b>",
+            f"😊 Настроение полностью восстановлено (100)\n"
+            f"❤️ Здоровье +15 (теперь {macaco['health']}/100)",
             parse_mode=ParseMode.HTML,
             reply_markup=kb.main_menu_kb()
         )
-        
     except Exception as e:
-        logger.error(f"Ошибка в walk_macaco_callback: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при выгуливании",
-            reply_markup=kb.main_menu_kb()
-        )
-    
+        logger.error(f"Ошибка прогулки: {e}")
+        await callback.message.edit_text("❌ Ошибка", reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "top_weight")
 async def top_weight_callback(callback: CallbackQuery):
     await show_top_players(callback)
 
+# ---------- ВЫЗОВ НА БОЙ ----------
 @dp.callback_query(F.data == "challenge_fight")
 async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
-    """Показать список доступных соперников"""
     user_id = callback.from_user.id
     await callback.answer()
-    
     user_macaco = await db.get_or_create_macaco(user_id)
     await db.apply_happiness_decay(user_macaco['id'])
-    
-    async with aiosqlite.connect(db.DB_NAME) as conn:
-        cursor = await conn.execute('''
-            SELECT macaco_id, name, weight, level, user_id 
-            FROM macacos 
-            WHERE user_id != ?
-        ''', (user_id,))
-        opponents = await cursor.fetchall()
-    
-    if not opponents:
-        await callback.message.edit_text(
-            "😕 <b>Нет доступных соперников!</b>\n"
-            "Пригласите друзей в игру!",
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.main_menu_kb()
-        )
+    await db.apply_hunger_decay(user_macaco['id'])
+    await db.apply_health_decay(user_macaco['id'])
+    user_macaco = await db.get_or_create_macaco(user_id)
+    if user_macaco['health'] <= 0:
+        await callback.message.edit_text("💔 Слишком слаб для боя! Восстанови здоровье.", reply_markup=kb.main_menu_kb())
         return
-    
+    if user_macaco['hunger'] >= 70:
+        await callback.message.edit_text("🍖 Слишком голоден для боя! Покорми макаку.", reply_markup=kb.main_menu_kb())
+        return
+    async with aiosqlite.connect(db.DB_NAME) as conn:
+        opponents = await (await conn.execute(
+            'SELECT macaco_id, name, weight, level, user_id FROM macacos WHERE user_id != ?', (user_id,)
+        )).fetchall()
+    if not opponents:
+        await callback.message.edit_text("😕 Нет соперников!", reply_markup=kb.main_menu_kb())
+        return
     await state.update_data(opponents_list=opponents)
-    
-    opponent_buttons = []
+    btns = []
     for opp in opponents[:10]:
         opp_id, name, weight, level, _ = opp
-        button_text = f"{name} | 🏋️ {weight} кг | ⭐ {level}"
-        opponent_buttons.append([
-            InlineKeyboardButton(text=button_text, callback_data=f"select_opp_{opp_id}")
-        ])
-    
-    opponent_buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
-    markup = InlineKeyboardMarkup(inline_keyboard=opponent_buttons)
-    
-    await callback.message.edit_text(
-        "🥊 <b>Выберите соперника:</b>\n\n"
-        "Нажмите на имя макаки, чтобы вызвать её на бой.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=markup
-    )
+        btns.append([InlineKeyboardButton(text=f"{name} | 🏋️ {weight} кг | ⭐ {level}", callback_data=f"select_opp_{opp_id}")])
+    btns.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+    await callback.message.edit_text("🥊 <b>Выберите соперника:</b>", parse_mode=ParseMode.HTML,
+                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
 @dp.callback_query(F.data.startswith("select_opp_"))
 async def select_opponent_callback(callback: CallbackQuery, state: FSMContext):
-    """Выбор соперника -> запрос ставки"""
-    opponent_id = int(callback.data.split("_")[2])
+    opp_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
     await callback.answer()
-    
     async with aiosqlite.connect(db.DB_NAME) as conn:
-        cursor = await conn.execute(
-            'SELECT name, weight, level FROM macacos WHERE macaco_id = ?',
-            (opponent_id,)
-        )
-        opponent = await cursor.fetchone()
-    
-    if not opponent:
-        await callback.message.edit_text(
-            "❌ Соперник больше не доступен",
-            reply_markup=kb.main_menu_kb()
-        )
+        opp = await (await conn.execute('SELECT name, weight, level FROM macacos WHERE macaco_id = ?', (opp_id,))).fetchone()
+    if not opp:
+        await callback.message.edit_text("❌ Соперник недоступен", reply_markup=kb.main_menu_kb())
         return
-    
-    await state.update_data(challenge_opponent_id=opponent_id, opponent_name=opponent[0])
-    
-    text = (
-        f"⚔️ <b>Вызов на бой</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🥊 <b>Соперник:</b> {opponent[0]}\n"
-        f"🏋️ Вес: {opponent[1]} кг\n"
-        f"⭐ Уровень: {opponent[2]}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"👇 <b>Выберите ставку:</b>"
-    )
-    
+    await state.update_data(challenge_opponent_id=opp_id, opponent_name=opp[0])
     await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.bet_selection_challenge_kb()
+        f"⚔️ <b>Вызов на бой</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"🥊 <b>Соперник:</b> {opp[0]}\n🏋️ Вес: {opp[1]} кг\n⭐ Уровень: {opp[2]}\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"👇 <b>Выберите ставку:</b>",
+        parse_mode=ParseMode.HTML, reply_markup=kb.bet_selection_challenge_kb()
     )
 
 @dp.callback_query(F.data.startswith("challenge_bet_"))
 async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
-    """Выбор ставки -> отправка вызова сопернику"""
     parts = callback.data.split("_")
     if len(parts) != 3:
         await callback.answer("❌ Ошибка данных")
         return
-
-    bet_amount = int(parts[2])
+    bet = int(parts[2])
     user_id = callback.from_user.id
     data = await state.get_data()
-    opponent_id = data.get('challenge_opponent_id')
-
-    if not opponent_id:
-        await callback.message.edit_text(
-            "❌ Ошибка: не выбран соперник",
-            reply_markup=kb.main_menu_kb()
-        )
-        await callback.answer()
+    opp_id = data.get('challenge_opponent_id')
+    if not opp_id:
+        await callback.message.edit_text("❌ Не выбран соперник", reply_markup=kb.main_menu_kb())
         await state.clear()
+        await callback.answer()
         return
-
     user_macaco = await db.get_or_create_macaco(user_id)
     await db.apply_happiness_decay(user_macaco['id'])
+    await db.apply_hunger_decay(user_macaco['id'])
+    await db.apply_health_decay(user_macaco['id'])
     user_macaco = await db.get_or_create_macaco(user_id)
-    
-    can_bet, msg = await db.can_make_bet(user_macaco['id'], bet_amount)
-    if not can_bet:
-        await callback.message.edit_text(
-            f"❌ {msg}",
-            reply_markup=kb.main_menu_kb()
-        )
+    can, msg = await db.can_make_bet(user_macaco['id'], bet)
+    if not can:
+        await callback.message.edit_text(f"❌ {msg}", reply_markup=kb.main_menu_kb())
         await callback.answer()
         return
-
     async with aiosqlite.connect(db.DB_NAME) as conn:
-        cursor = await conn.execute(
-            'SELECT name, weight, user_id FROM macacos WHERE macaco_id = ?',
-            (opponent_id,)
-        )
-        opponent_data = await cursor.fetchone()
-
-    if not opponent_data:
-        await callback.message.edit_text(
-            "❌ Соперник больше не доступен",
-            reply_markup=kb.main_menu_kb()
-        )
+        opp_data = await (await conn.execute(
+            'SELECT name, weight, user_id FROM macacos WHERE macaco_id = ?', (opp_id,)
+        )).fetchone()
+    if not opp_data:
+        await callback.message.edit_text("❌ Соперник недоступен", reply_markup=kb.main_menu_kb())
         await callback.answer()
         return
-
-    opponent_name, opponent_weight, opponent_user_id = opponent_data
-
-    if opponent_weight < bet_amount:
-        await callback.message.edit_text(
-            f"❌ У соперника недостаточно веса!\n"
-            f"Вес {opponent_name}: {opponent_weight} кг\n"
-            f"Ваша ставка: {bet_amount} кг",
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.main_menu_kb()
-        )
+    opp_name, opp_weight, opp_user_id = opp_data
+    if opp_weight < bet:
+        await callback.message.edit_text(f"❌ У соперника недостаточно веса!", parse_mode=ParseMode.HTML,
+                                         reply_markup=kb.main_menu_kb())
         await callback.answer()
         return
-
     try:
-        await bot.send_chat_action(opponent_user_id, action="typing")
-    except Exception:
-        await callback.message.edit_text(
-            f"😕 <b>Не удалось отправить вызов!</b>\n\n"
-            f"Соперник ({opponent_name}) ещё не запускал бота.\n"
-            f"Попросите его написать /start в личные сообщения бота.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.main_menu_kb()
-        )
+        await bot.send_chat_action(opp_user_id, action="typing")
+    except:
+        await callback.message.edit_text(f"😕 Соперник ({opp_name}) ещё не запускал бота.", reply_markup=kb.main_menu_kb())
         await callback.answer()
         return
-
     global challenge_counter
     challenge_counter += 1
-    challenge_id = f"{user_id}-{opponent_id}-{challenge_counter}"
-
-    challenger_name = user_macaco['name']
-
+    cid = f"{user_id}-{opp_id}-{challenge_counter}"
     challenge_text = (
         f"⚔️ <b>Вас вызывают на бой!</b>\n\n"
-        f"🐒 <b>Противник:</b> {challenger_name}\n"
+        f"🐒 <b>Противник:</b> {user_macaco['name']}\n"
         f"🏋️ Вес: {user_macaco['weight']} кг\n"
         f"⭐ Уровень: {user_macaco['level']}\n"
-        f"💰 <b>Ставка:</b> {bet_amount} кг\n\n"
-        f"<i>У вас есть 60 секунд, чтобы принять решение.</i>"
+        f"💰 <b>Ставка:</b> {bet} кг\n\n"
+        f"<i>У вас есть 60 секунд.</i>"
     )
-
     try:
-        challenge_message = await bot.send_message(
-            opponent_user_id,
-            challenge_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.challenge_response_kb(challenge_id, bet_amount)
-        )
+        challenge_msg = await bot.send_message(opp_user_id, challenge_text, parse_mode=ParseMode.HTML,
+                                               reply_markup=kb.challenge_response_kb(cid, bet))
     except Exception as e:
         logger.error(f"Не удалось отправить вызов: {e}")
-        await callback.message.edit_text(
-            "❌ Не удалось отправить вызов. Попробуйте позже.",
-            reply_markup=kb.main_menu_kb()
-        )
+        await callback.message.edit_text("❌ Не удалось отправить вызов", reply_markup=kb.main_menu_kb())
         await callback.answer()
         return
-
-    async def timeout_challenge():
+    async def timeout():
         await asyncio.sleep(60)
-        if challenge_id in active_challenges:
-            del active_challenges[challenge_id]
+        if cid in active_challenges:
+            del active_challenges[cid]
             try:
-                await challenge_message.edit_text(
-                    f"⏳ Время вышло. Вызов от {challenger_name} отклонён автоматически.",
-                    reply_markup=None
-                )
-                await callback.message.edit_text(
-                    f"⏳ Соперник не ответил на вызов в течение 60 секунд.",
-                    reply_markup=kb.main_menu_kb()
-                )
-            except:
-                pass
-
-    task = asyncio.create_task(timeout_challenge())
-
-    active_challenges[challenge_id] = {
+                await challenge_msg.edit_text(f"⏳ Время вышло. Вызов от {user_macaco['name']} отклонён.")
+                await callback.message.edit_text("⏳ Соперник не ответил.", reply_markup=kb.main_menu_kb())
+            except: pass
+    task = asyncio.create_task(timeout())
+    active_challenges[cid] = {
         'challenger_id': user_id,
         'challenger_macaco_id': user_macaco['id'],
-        'challenger_name': challenger_name,
-        'opponent_id': opponent_user_id,
-        'opponent_macaco_id': opponent_id,
-        'opponent_name': opponent_name,
-        'bet': bet_amount,
-        'message': challenge_message,
+        'challenger_name': user_macaco['name'],
+        'opponent_id': opp_user_id,
+        'opponent_macaco_id': opp_id,
+        'opponent_name': opp_name,
+        'bet': bet,
+        'message': challenge_msg,
         'task': task,
         'challenge_msg_id': callback.message.message_id,
         'challenge_chat_id': callback.message.chat.id
     }
-
     await callback.message.edit_text(
-        f"✅ <b>Вызов отправлен!</b>\n\n"
-        f"🥊 Соперник: {opponent_name}\n"
-        f"💰 Ставка: {bet_amount} кг\n\n"
-        f"Ожидайте ответа... (60 секунд)",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.main_menu_kb()
+        f"✅ <b>Вызов отправлен!</b>\n\n🥊 Соперник: {opp_name}\n💰 Ставка: {bet} кг\n\nОжидайте ответа... (60 сек)",
+        parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_kb()
     )
     await callback.answer()
     await state.clear()
 
 @dp.callback_query(F.data.startswith("accept_fight_"))
 async def accept_fight_callback(callback: CallbackQuery):
-    """Соперник принял вызов"""
     parts = callback.data.split("_")
     if len(parts) != 3:
         await callback.answer("❌ Ошибка данных")
         return
-
-    challenge_id = parts[2]
-
-    if challenge_id not in active_challenges:
-        await callback.message.edit_text(
-            "❌ Этот вызов уже недействителен (возможно, истекло время).",
-            reply_markup=None
-        )
+    cid = parts[2]
+    if cid not in active_challenges:
+        await callback.message.edit_text("❌ Вызов недействителен", reply_markup=None)
         await callback.answer()
         return
-
-    challenge = active_challenges[challenge_id]
-    opponent_user_id = callback.from_user.id
-
-    if opponent_user_id != challenge['opponent_id']:
+    chall = active_challenges[cid]
+    opp_user_id = callback.from_user.id
+    if opp_user_id != chall['opponent_id']:
         await callback.answer("❌ Это не ваш вызов!")
         return
-
-    challenge['task'].cancel()
-
-    challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
-    opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
-    
-    await db.apply_happiness_decay(challenger_macaco['id'])
-    await db.apply_happiness_decay(opponent_macaco['id'])
-    challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
-    opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
-
-    bet = challenge['bet']
-
-    if challenger_macaco['weight'] < bet:
-        await callback.message.edit_text(
-            f"❌ У противника ({challenge['challenger_name']}) уже недостаточно веса для этой ставки.",
-            reply_markup=kb.main_menu_kb()
-        )
-        try:
-            await bot.send_message(
-                challenge['challenger_id'],
-                f"❌ Ваш вызов отклонён, так как у вас стало меньше {bet} кг."
-            )
-        except:
-            pass
-        del active_challenges[challenge_id]
+    chall['task'].cancel()
+    c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
+    o_macaco = await db.get_or_create_macaco(opp_user_id)
+    await db.apply_happiness_decay(c_macaco['id'])
+    await db.apply_hunger_decay(c_macaco['id'])
+    await db.apply_health_decay(c_macaco['id'])
+    await db.apply_happiness_decay(o_macaco['id'])
+    await db.apply_hunger_decay(o_macaco['id'])
+    await db.apply_health_decay(o_macaco['id'])
+    c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
+    o_macaco = await db.get_or_create_macaco(opp_user_id)
+    bet = chall['bet']
+    if c_macaco['health'] <= 0 or o_macaco['health'] <= 0:
+        await callback.message.edit_text("💔 Один из участников не может драться (здоровье = 0).", reply_markup=kb.main_menu_kb())
+        del active_challenges[cid]
         await callback.answer()
         return
-
-    if opponent_macaco['weight'] < bet:
-        await callback.message.edit_text(
-            f"❌ У вас недостаточно веса для этой ставки!",
-            reply_markup=kb.main_menu_kb()
-        )
-        try:
-            await bot.send_message(
-                challenge['challenger_id'],
-                f"❌ {opponent_macaco['name']} не смог принять вызов: недостаточно веса."
-            )
-        except:
-            pass
-        del active_challenges[challenge_id]
+    if c_macaco['hunger'] >= 70 or o_macaco['hunger'] >= 70:
+        await callback.message.edit_text("🍖 Один из участников слишком голоден.", reply_markup=kb.main_menu_kb())
+        del active_challenges[cid]
         await callback.answer()
         return
-
-    # Отправляем гифку начала боя (только её)
-    await send_gif(
-        callback.message.chat.id,
-        'fight',
-        'start',
-        parse_mode=ParseMode.HTML
-    )
-
-    # Симуляция боя
-    winner_id = random.choice([challenger_macaco['id'], opponent_macaco['id']])
-    loser_id = opponent_macaco['id'] if winner_id == challenger_macaco['id'] else challenger_macaco['id']
-
-    # Проигравший теряет 20 настроения
+    if c_macaco['weight'] < bet or o_macaco['weight'] < bet:
+        await callback.message.edit_text("❌ Недостаточно веса у одного из участников.", reply_markup=kb.main_menu_kb())
+        del active_challenges[cid]
+        await callback.answer()
+        return
+    await send_gif(callback.message.chat.id, 'fight', 'start', parse_mode=ParseMode.HTML)
+    winner_id = random.choice([c_macaco['id'], o_macaco['id']])
+    loser_id = o_macaco['id'] if winner_id == c_macaco['id'] else c_macaco['id']
     await db.decrease_happiness(loser_id, 20)
-
+    await db.decrease_health(loser_id, 10)
     await db.update_weight_after_fight(winner_id, loser_id, bet)
-    await db.record_fight(challenger_macaco['id'], opponent_macaco['id'], winner_id, bet)
-
-    exp_gain = 25 if winner_id == challenger_macaco['id'] else 10
+    await db.record_fight(c_macaco['id'], o_macaco['id'], winner_id, bet)
+    exp_gain = 25 if winner_id == c_macaco['id'] else 10
     await db.add_experience(winner_id, exp_gain)
-
-    challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
-    opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
-
-    if winner_id == challenger_macaco['id']:
-        winner_name = challenger_macaco['name']
-        loser_name = opponent_macaco['name']
-        result_text = f"🎉 <b>ПОБЕДА!</b> {winner_name} победил {loser_name} и забрал {bet} кг!"
-        loser_happiness = opponent_macaco['happiness']
+    c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
+    o_macaco = await db.get_or_create_macaco(opp_user_id)
+    if winner_id == c_macaco['id']:
+        result_text = f"🎉 <b>ПОБЕДА!</b> {c_macaco['name']} победил {o_macaco['name']} и забрал {bet} кг!"
+        loser_h = o_macaco['happiness']
+        loser_hp = o_macaco['health']
     else:
-        winner_name = opponent_macaco['name']
-        loser_name = challenger_macaco['name']
-        result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {loser_name} проиграл {winner_name} и потерял {bet} кг.\n😊 Настроение: -20"
-        loser_happiness = challenger_macaco['happiness']
-
+        result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {c_macaco['name']} проиграл {o_macaco['name']} и потерял {bet} кг.\n😊 -20, ❤️ -10"
+        loser_h = c_macaco['happiness']
+        loser_hp = c_macaco['health']
     result_msg = (
-        f"{'🎉' if winner_id == challenger_macaco['id'] else '😔'} <b>БОЙ ЗАВЕРШЁН!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{result_text}\n\n"
-        f"🏋️ {challenger_macaco['name']}: {challenger_macaco['weight']} кг\n"
-        f"🏋️ {opponent_macaco['name']}: {opponent_macaco['weight']} кг\n"
-        f"📊 Победитель получает +{exp_gain} опыта\n"
-        f"😊 Настроение проигравшего: {loser_happiness}/100\n"
+        f"{'🎉' if winner_id == c_macaco['id'] else '😔'} <b>БОЙ ЗАВЕРШЁН!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n{result_text}\n\n"
+        f"🏋️ {c_macaco['name']}: {c_macaco['weight']} кг\n"
+        f"🏋️ {o_macaco['name']}: {o_macaco['weight']} кг\n"
+        f"📊 Победитель +{exp_gain} опыта\n"
+        f"😊 Настроение проигравшего: {loser_h}/100\n"
+        f"❤️ Здоровье проигравшего: {loser_hp}/100\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     )
-
-    await callback.message.edit_text(
-        result_msg,
-        parse_mode=ParseMode.HTML,
-        reply_markup=None
-    )
-
+    await callback.message.edit_text(result_msg, parse_mode=ParseMode.HTML, reply_markup=None)
     try:
-        await bot.send_message(
-            challenge['challenger_id'],
-            result_msg,
-            parse_mode=ParseMode.HTML
-        )
+        await bot.send_message(chall['challenger_id'], result_msg, parse_mode=ParseMode.HTML)
     except:
         pass
-
-    del active_challenges[challenge_id]
+    del active_challenges[cid]
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("decline_fight_"))
 async def decline_fight_callback(callback: CallbackQuery):
-    """Соперник отклонил вызов"""
     parts = callback.data.split("_")
     if len(parts) != 3:
-        await callback.answer("❌ Ошибка данных")
+        await callback.answer("❌ Ошибка")
         return
-
-    challenge_id = parts[2]
-
-    if challenge_id not in active_challenges:
-        await callback.message.edit_text(
-            "❌ Этот вызов уже недействителен.",
-            reply_markup=None
-        )
+    cid = parts[2]
+    if cid not in active_challenges:
+        await callback.message.edit_text("❌ Вызов недействителен", reply_markup=None)
         await callback.answer()
         return
-
-    challenge = active_challenges[challenge_id]
-    challenge['task'].cancel()
-
+    chall = active_challenges[cid]
+    chall['task'].cancel()
     try:
-        await bot.send_message(
-            challenge['challenger_id'],
-            f"😕 {challenge['opponent_name']} отклонил ваш вызов на бой."
-        )
+        await bot.send_message(chall['challenger_id'], f"😕 {chall['opponent_name']} отклонил ваш вызов.")
     except:
         pass
-
-    await callback.message.edit_text(
-        f"❌ Вы отклонили вызов от {challenge['challenger_name']}.",
-        reply_markup=None
-    )
-
-    del active_challenges[challenge_id]
+    await callback.message.edit_text(f"❌ Вы отклонили вызов от {chall['challenger_name']}.", reply_markup=None)
+    del active_challenges[cid]
     await callback.answer()
 
 @dp.callback_query(F.data == "cancel_fight")
 async def cancel_fight_callback(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "❌ Бой отменён",
-        reply_markup=kb.main_menu_kb()
-    )
+    await callback.message.edit_text("❌ Бой отменён", reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "👇 <b>Главное меню:</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.main_menu_kb()
-    )
+    await callback.message.edit_text("👇 <b>Главное меню:</b>", parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "help_info")
 async def help_info_callback(callback: CallbackQuery):
     await help_command(callback.message)
 
-# ========== ИНЛАЙН-РЕЖИМ ==========
+# ---------- ИНЛАЙН-РЕЖИМ ----------
 @dp.inline_query()
 async def inline_mode(inline_query: InlineQuery):
-    query = inline_query.query.lower().strip()
-    user_id = inline_query.from_user.id
+    q = inline_query.query.lower().strip()
+    uid = inline_query.from_user.id
     results = []
-    
     try:
-        if query in ["", "info", "мой", "макака"]:
-            macaco = await db.get_or_create_macaco(user_id)
-            await db.apply_happiness_decay(macaco['id'])
-            macaco = await db.get_or_create_macaco(user_id)
-            result = InlineQueryResultArticle(
-                id="1",
-                title=f"🐒 {macaco['name']}",
-                description=f"Вес: {macaco['weight']} кг | Ур. {macaco['level']} | 😊 {macaco['happiness']}/100",
+        if q in ["", "info", "мой", "макака"]:
+            m = await db.get_or_create_macaco(uid)
+            await db.apply_happiness_decay(m['id'])
+            await db.apply_hunger_decay(m['id'])
+            await db.apply_health_decay(m['id'])
+            m = await db.get_or_create_macaco(uid)
+            results.append(InlineQueryResultArticle(
+                id="1", title=f"🐒 {m['name']}",
+                description=f"Вес: {m['weight']} кг | Ур. {m['level']} | ❤️ {m['health']} | 🍖 {100 - m['hunger']} | 😊 {m['happiness']}",
                 input_message_content=InputTextMessageContent(
                     message_text=(
-                        f"🐒 <b>{macaco['name']}</b>\n"
-                        f"Вес: {macaco['weight']} кг\n"
-                        f"Уровень: {macaco['level']}\n"
-                        f"Опыт: {macaco['exp']}/100\n"
-                        f"😊 Настроение: {macaco['happiness']}/100"
-                    ),
-                    parse_mode=ParseMode.HTML
+                        f"🐒 <b>{m['name']}</b>\nВес: {m['weight']} кг\nУровень: {m['level']}\nОпыт: {m['exp']}/100\n"
+                        f"❤️ Здоровье: {m['health']}/100\n🍖 Сытость: {100 - m['hunger']}/100\n😊 Настроение: {m['happiness']}/100"
+                    ), parse_mode=ParseMode.HTML
                 ),
-                reply_markup=kb.inline_actions_kb(macaco['id']),
+                reply_markup=kb.inline_actions_kb(m['id']),
                 thumbnail_url="https://img.icons8.com/color/96/000000/monkey.png"
-            )
-            results.append(result)
-        
-        elif query in ["feed", "кормить", "еда"]:
-            result = InlineQueryResultArticle(
-                id="2",
-                title="🍌 Покормить макаку",
-                description="Выберите еду",
-                input_message_content=InputTextMessageContent(
-                    message_text="🍽️ <b>Выберите еду:</b>",
-                    parse_mode=ParseMode.HTML
-                ),
+            ))
+        elif q in ["feed", "кормить", "еда"]:
+            results.append(InlineQueryResultArticle(
+                id="2", title="🍌 Покормить макаку", description="Выберите еду",
+                input_message_content=InputTextMessageContent(message_text="🍽️ <b>Выберите еду:</b>", parse_mode=ParseMode.HTML),
                 reply_markup=kb.food_selection_kb(),
                 thumbnail_url="https://img.icons8.com/color/96/000000/banana.png"
-            )
-            results.append(result)
-        
-        elif query in ["fight", "бой", "вызов"]:
-            result = InlineQueryResultArticle(
-                id="3",
-                title="⚔️ Вызвать на бой",
-                description="Выберите соперника",
-                input_message_content=InputTextMessageContent(
-                    message_text="⚔️ <b>Вызов на бой</b>\nИспользуйте кнопки для выбора соперника.",
-                    parse_mode=ParseMode.HTML
-                ),
+            ))
+        elif q in ["fight", "бой", "вызов"]:
+            results.append(InlineQueryResultArticle(
+                id="3", title="⚔️ Вызвать на бой", description="Список соперников",
+                input_message_content=InputTextMessageContent(message_text="⚔️ <b>Вызов на бой</b>", parse_mode=ParseMode.HTML),
                 reply_markup=kb.inline_actions_kb(0),
                 thumbnail_url="https://img.icons8.com/color/96/000000/boxing.png"
-            )
-            results.append(result)
-        
-        elif query in ["top", "топ", "рейтинг"]:
+            ))
+        elif q in ["top", "топ", "рейтинг"]:
             top = await db.get_top_macacos(3)
             if top:
-                text = "🏆 <b>ТОП-3 МАКАК:</b>\n"
+                txt = "🏆 <b>ТОП-3 МАКАК:</b>\n"
                 medals = ["🥇", "🥈", "🥉"]
-                for idx, (name, weight, level, username) in enumerate(top):
-                    text += f"{medals[idx]} {name} — {weight} кг (ур. {level})\n"
+                for i, (name, w, lvl, _) in enumerate(top):
+                    txt += f"{medals[i]} {name} — {w} кг (ур. {lvl})\n"
             else:
-                text = "🏆 Топ пуст!"
-            result = InlineQueryResultArticle(
-                id="4",
-                title="🏆 Топ игроков",
-                description="Лучшие по весу",
-                input_message_content=InputTextMessageContent(
-                    message_text=text,
-                    parse_mode=ParseMode.HTML
-                ),
+                txt = "🏆 Топ пуст!"
+            results.append(InlineQueryResultArticle(
+                id="4", title="🏆 Топ игроков", description="Лучшие по весу",
+                input_message_content=InputTextMessageContent(message_text=txt, parse_mode=ParseMode.HTML),
                 thumbnail_url="https://img.icons8.com/color/96/000000/prize.png"
-            )
-            results.append(result)
-        
+            ))
         else:
-            found = await db.search_macacos(query, 5)
-            for idx, m in enumerate(found):
-                result = InlineQueryResultArticle(
-                    id=f"search_{idx}",
-                    title=f"🐒 {m['name']}",
+            found = await db.search_macacos(q, 5)
+            for i, m in enumerate(found):
+                results.append(InlineQueryResultArticle(
+                    id=f"search_{i}", title=f"🐒 {m['name']}",
                     description=f"Вес: {m['weight']} кг | Ур. {m['level']}",
                     input_message_content=InputTextMessageContent(
-                        message_text=(
-                            f"🐒 <b>{m['name']}</b>\n"
-                            f"Вес: {m['weight']} кг\n"
-                            f"Уровень: {m['level']}"
-                        ),
+                        message_text=f"🐒 <b>{m['name']}</b>\nВес: {m['weight']} кг\nУровень: {m['level']}",
                         parse_mode=ParseMode.HTML
                     ),
                     reply_markup=kb.inline_actions_kb(m['id']),
                     thumbnail_url="https://img.icons8.com/color/96/000000/monkey.png"
-                )
-                results.append(result)
-        
+                ))
         if not results:
-            result = InlineQueryResultArticle(
-                id="0",
-                title="🤔 Не найдено",
-                description="Попробуйте: info, feed, fight, top",
-                input_message_content=InputTextMessageContent(
-                    message_text="Команды: info, feed, fight, top"
-                )
-            )
-            results.append(result)
-        
+            results.append(InlineQueryResultArticle(
+                id="0", title="🤔 Не найдено", description="Попробуйте: info, feed, fight, top",
+                input_message_content=InputTextMessageContent(message_text="Команды: info, feed, fight, top")
+            ))
         await inline_query.answer(results, cache_time=60, is_personal=True)
-    
     except Exception as e:
-        logger.error(f"Ошибка в inline_mode: {e}")
+        logger.error(f"Инлайн ошибка: {e}")
         await inline_query.answer([], cache_time=60)
 
-# ========== ЗАПУСК ==========
+# ---------- ЗАПУСК ----------
 async def main():
     logger.info("🤖 Бот 'Боевые Макаки PRO' запускается...")
-    
     try:
         bot_info = await bot.get_me()
         logger.info(f"✅ Бот авторизован: @{bot_info.username}")
         await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
-        print("\n" + "="*60)
-        print("ПРОВЕРЬТЕ:")
-        print("1. Токен в переменной BOT_TOKEN на Bothost")
-        print("2. Установлены ли все зависимости (requirements.txt)")
-        print("3. Интернет-соединение")
-        print("="*60 + "\n")
+        print("\nПРОВЕРЬТЕ:\n1. Токен в BOT_TOKEN\n2. Зависимости\n3. Интернет\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
