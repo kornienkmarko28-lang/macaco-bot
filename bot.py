@@ -19,7 +19,7 @@ from aiogram.types import (
     InlineKeyboardMarkup
 )
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge
 
 import database as db
 import keyboards as kb
@@ -48,7 +48,7 @@ class Challenge(StatesGroup):
 active_challenges = {}
 challenge_counter = 0
 
-# ---------- Отправка гифок (кроме еды) ----------
+# ---------- Отправка гифок ----------
 async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", parse_mode=None):
     try:
         gif_info = cfg.get_gif_info(gif_type, gif_name)
@@ -56,12 +56,9 @@ async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", par
             animation = FSInputFile(gif_info['path'])
             await bot.send_animation(chat_id, animation, caption=caption or gif_info.get('caption', ''), parse_mode=parse_mode)
             return True
-        else:
-            logger.warning(f"Гифка не найдена: {gif_type}/{gif_name}")
-            return False
     except Exception as e:
-        logger.error(f"Ошибка гифки {gif_type}/{gif_name}: {e}")
-        return False
+        logger.warning(f"Гифка {gif_type}/{gif_name}: {e}")
+    return False
 
 # ---------- Показать макаку ----------
 async def show_my_macaco(user_id: int, source):
@@ -160,73 +157,77 @@ async def start_command(message: Message):
 @dp.message(Command("help"))
 async def help_command(message: Message):
     bot_username = (await bot.get_me()).username
+    # Основной полный текст помощи
     help_text = (
         "📖 <b>ПОМОЩЬ ПО ИГРЕ — БОЕВЫЕ МАКАКИ PRO</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        
         "<b>🐒 1. ОСНОВНЫЕ КОМАНДЫ</b>\n"
         "• /start — начать игру (создать макаку)\n"
         "• /my — информация о твоей макаке\n"
         "• /rename — сменить имя макаке\n"
         "• /top — топ-5 самых тяжёлых макак\n"
         "• /help — эта справка\n\n"
-        
         "<b>🍌 2. ЕДА И КОРМЛЕНИЕ</b>\n"
-        "• Каждая еда имеет КД (кулдаун) и даёт разные бонусы.\n"
-        "• При сытости = 0 макака теряет здоровье.\n"
-        "• При настроении = 0 макака отказывается есть.\n\n"
         "┌─────────────────────────────────────┐\n"
         "│ 🍌 Банан   │ +1 кг │ +10 😊 │ -30 🍖 │ +10 ❤️ │ КД 5ч │\n"
         "│ 🥩 Мясо    │ +3 кг │  +5 😊 │ -50 🍖 │ +15 ❤️ │ КД 8ч │\n"
         "│ 🍰 Торт    │ +5 кг │ +20 😊 │ -70 🍖 │  +5 ❤️ │ КД12ч │\n"
         "│ 🥗 Салат   │ +2 кг │ +15 😊 │ -40 🍖 │ +12 ❤️ │ КД 6ч │\n"
-        "└─────────────────────────────────────┘\n\n"
-        
+        "└─────────────────────────────────────┘\n"
+        "• При сытости = 0 макака теряет здоровье.\n"
+        "• При настроении = 0 макака отказывается есть.\n\n"
         "<b>🎁 3. ЕЖЕДНЕВНАЯ НАГРАДА</b>\n"
-        "• +1 кг веса, +5 к настроению, +5 к здоровью.\n"
-        "• Доступна раз в сутки.\n\n"
-        
+        "• +1 кг веса, +5 😊, +5 ❤️. Доступна раз в сутки.\n\n"
         "<b>🚶 4. ПРОГУЛКА</b>\n"
-        "• Восстанавливает настроение до 100%.\n"
-        "• Даёт +15 к здоровью (но не выше 100).\n"
-        "• Поднимает настроение даже если макака расстроена.\n\n"
-        
+        "• Настроение = 100, +15 ❤️.\n\n"
         "<b>⚔️ 5. БОЕВАЯ СИСТЕМА</b>\n"
-        "• <b>Вызов:</b> «Вызвать на бой» → выбрать соперника → ставку.\n"
-        "• <b>Принятие:</b> соперник получает уведомление и 60 сек на ответ.\n"
-        "• <b>Условия боя:</b>\n"
-        "  - Здоровье > 0 и сытость < 70 у обоих.\n"
-        "  - Вес ≥ ставки (1,3,5,10 кг).\n"
+        "• <b>Вызов:</b> «Вызвать на бой» → соперник → ставка.\n"
+        "• <b>Принятие:</b> 60 сек на ответ.\n"
+        "• <b>Условия:</b> ❤️ > 0, 🍖 < 70, вес ≥ ставки.\n"
         "• <b>Результат:</b>\n"
         "  - Победитель: +25 опыта, забирает вес ставки.\n"
         "  - Проигравший: +10 опыта, теряет вес, -20 😊, -10 ❤️.\n\n"
-        
-        "<b>📊 6. ХАРАКТЕРИСТИКИ МАКАКИ</b>\n"
+        "<b>📊 6. ХАРАКТЕРИСТИКИ</b>\n"
         "┌─────────────────────────────────────┐\n"
-        "│ 🏋️ Вес      │ растёт от еды и побед, падает от проигрышей │\n"
-        "│ ⭐ Уровень  │ +1 уровень за каждые 100 опыта             │\n"
-        "│ 📊 Опыт    │ +25 победа, +10 поражение                 │\n"
-        "│ ❤️ Здоровье│ падает: голод (-5/ч), проигрыш (-10)      │\n"
-        "│            │ растёт: еда, прогулка, ежедневка         │\n"
-        "│ 🍖 Сытость │ падает: каждые 2ч (-5)                   │\n"
-        "│            │ растёт: еда (разные значения)           │\n"
-        "│ 😊 Настрое-│ падает: время (-10/ч), проигрыш (-20)   │\n"
-        "│    ние     │ растёт: еда, прогулка (до 100), ежедневка│\n"
-        "└─────────────────────────────────────┘\n"
-        "• При сытости = 0 макака теряет здоровье (голод).\n"
-        "• При настроении = 0 макака отказывается от еды.\n\n"
-        
+        "│ 🏋️ Вес      │ еда/победа ↑, поражение ↓  │\n"
+        "│ ⭐ Уровень  │ 100 опыта = +1 уровень    │\n"
+        "│ 📊 Опыт    │ +25 победа, +10 поражение │\n"
+        "│ ❤️ Здоровье│ голод (-5/ч), поражение (-10)│\n"
+        "│            │ еда/прогулка/ежедневка +  │\n"
+        "│ 🍖 Сытость │ падает: каждые 2ч (-5)   │\n"
+        "│ 😊 Настрое-│ время (-10/ч), поражение (-20)│\n"
+        "│    ние     │ еда/прогулка/ежедневка + │\n"
+        "└─────────────────────────────────────┘\n\n"
         "<b>💬 7. ИНЛАЙН-РЕЖИМ</b>\n"
-        f"Начните писать @{bot_username} в любом чате:\n"
-        "• info — информация о вашей макаке\n"
-        "• feed — меню кормления\n"
-        "• fight — список соперников\n"
-        "• top — топ игроков\n\n"
-        
+        f"• @{bot_username} info — инфо о макаке\n"
+        f"• @{bot_username} feed — меню кормления\n"
+        f"• @{bot_username} fight — список соперников\n"
+        f"• @{bot_username} top — топ игроков\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🐒 <b>Желаем весёлых боёв и вкусных бананов!</b>"
     )
-    await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=kb.back_to_menu_kb())
+    # Сокращённый вариант (на случай превышения лимита)
+    short_help = (
+        "📖 <b>ПОМОЩЬ (кратко)</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "/start, /my, /rename, /top, /help\n"
+        "🍌 Еда: +вес, +❤️, +😊, -🍖, КД 5-12ч\n"
+        "🎁 Ежедневно: +1 кг, +5❤️, +5😊\n"
+        "🚶 Прогулка: 😊=100, +15❤️\n"
+        "⚔️ Бой: вызов → ставка → 60сек\n"
+        "   Победа: +25 опыта, +вес\n"
+        "   Поражение: +10 опыта, -вес, -20😊, -10❤️\n"
+        "📊 Здоровье ↓ при 🍖=0 и поражении\n"
+        "💬 Инлайн: @bot info/feed/fight/top\n"
+        "━━━━━━━━━━━━━━━━"
+    )
+    try:
+        await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=kb.back_to_menu_kb())
+    except TelegramEntityTooLarge:
+        await message.answer(short_help, parse_mode=ParseMode.HTML, reply_markup=kb.back_to_menu_kb())
+    except Exception as e:
+        logger.error(f"Ошибка в help_command: {e}")
+        await message.answer("❌ Не удалось загрузить справку.", reply_markup=kb.back_to_menu_kb())
 
 @dp.message(Command("my"))
 async def my_macaco_command(message: Message):
@@ -355,7 +356,6 @@ async def feed_with_food_callback(callback: CallbackQuery):
             return
         await db.feed_macaco_with_food(macaco['id'], food_id)
         macaco = await db.get_or_create_macaco(user_id)
-        # НЕТ ГИФКИ — только текст
         await callback.message.answer(
             f"🍽️ <b>Макака поела {food['name']}!</b>\n"
             f"🏋️ Вес: +{food['weight_gain']} кг (теперь {macaco['weight']} кг)\n"
@@ -698,9 +698,10 @@ async def main_menu_callback(callback: CallbackQuery):
     await callback.message.edit_text("👇 <b>Главное меню:</b>", parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_kb())
     await callback.answer()
 
+# ========== ИСПРАВЛЕННАЯ КНОПКА ПОМОЩИ ==========
 @dp.callback_query(F.data == "help_info")
 async def help_info_callback(callback: CallbackQuery):
-    await callback.answer()  # ← ВАЖНО!
+    await callback.answer()  # Сразу отвечаем, чтобы кнопка не зависла
     await help_command(callback.message)
 
 # ---------- ИНЛАЙН-РЕЖИМ ----------
