@@ -64,7 +64,7 @@ async def show_my_macaco(user_id: int, source):
     """Показать информацию о макаке пользователя"""
     try:
         if isinstance(source, CallbackQuery):
-            await source.answer()  # сразу отвечаем на callback
+            await source.answer()
         
         macaco = await db.get_or_create_macaco(user_id)
         
@@ -95,7 +95,6 @@ async def show_my_macaco(user_id: int, source):
                     reply_markup=markup
                 )
             except TelegramBadRequest as e:
-                # Игнорируем ошибку "message is not modified"
                 if "message is not modified" not in str(e):
                     raise e
         else:
@@ -695,7 +694,7 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
         await bot.send_chat_action(opponent_user_id, action="typing")
     except Exception:
         await callback.message.edit_text(
-            f"😕 <b>Не удалось отправть вызов!</b>\n\n"
+            f"😕 <b>Не удалось отправить вызов!</b>\n\n"
             f"Соперник ({opponent_name}) ещё не запускал бота.\n"
             f"Попросите его написать /start в личные сообщения бота.",
             parse_mode=ParseMode.HTML,
@@ -706,7 +705,8 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
 
     global challenge_counter
     challenge_counter += 1
-    challenge_id = f"{user_id}_{opponent_id}_{challenge_counter}"
+    # ВАЖНО: используем ДЕФИС, а не подчёркивание!
+    challenge_id = f"{user_id}-{opponent_id}-{challenge_counter}"
 
     challenger_name = user_macaco['name']
 
