@@ -2,12 +2,15 @@ import asyncio
 import logging
 import os
 import random
-import aiosqlite  # <--- ВАЖНО: добавлен недостающий импорт
+import aiosqlite
 from datetime import datetime
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, FSInputFile,
     InlineQuery, InlineQueryResultArticle,
@@ -19,7 +22,7 @@ import database as db
 import keyboards as kb
 import config as cfg
 
-# Загрузка переменных окружения
+# ========== ЗАГРУЗКА ТОКЕНА ==========
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 
@@ -28,19 +31,23 @@ if not TOKEN:
     print("💡 Убедитесь, что в Bothost добавлена переменная BOT_TOKEN")
     exit(1)
 
-# Настройка логирования
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация бота и диспетчера
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+# ========== FSM ДЛЯ ПЕРЕИМЕНОВАНИЯ ==========
+class Rename(StatesGroup):
+    waiting_for_name = State()
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-
 async def show_my_macaco(user_id: int, source):
     """Показать информацию о макаке пользователя"""
     try:
@@ -59,7 +66,8 @@ async def show_my_macaco(user_id: int, source):
             f"🍖 <b>Сытость:</b> {100 - macaco['hunger']}/100\n"
             f"😊 <b>Настроение:</b> {macaco['happiness']}/100\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎁 <b>Ежедневная награда:</b> {daily_status}"
+            f"🎁 <b>Ежедневная награда:</b> {daily_status}\n"
+            f"✏️ /rename — сменить имя"
         )
         
         markup = kb.main_menu_kb()
@@ -125,7 +133,6 @@ async def show_top_players(callback: CallbackQuery):
         await callback.answer()
 
 # ========== КОМАНДЫ ==========
-
 @dp.message(CommandStart())
 async def start_command(message: Message):
     user = message.from_user
@@ -139,14 +146,16 @@ async def start_command(message: Message):
     await db.get_or_create_user(user_data)
     await db.get_or_create_macaco(user.id)
     
-    # Замените @ваш_бот на реальный юзернейм вашего бота
+    bot_username = (await bot.get_me()).username
+    
     welcome_text = (
         "🎮 <b>Добро пожаловать в Боевые Макаки PRO!</b> 🐒\n\n"
         "<b>Новые возможности:</b>\n"
         "• 4 вида еды с разными эффектами\n"
         "• Ежедневная награда (+1 кг каждый день)\n"
-        "• Инлайн-режим — пишите @ваш_бот команда\n"
+        f"• Инлайн-режим — пишите @{bot_username} команда\n"
         "• Анимация для каждого действия\n"
+        "• ✏️ /rename — дай имя своей макаке!\n"
         "\n"
         "👇 <b>Выбери действие:</b>"
     )
@@ -159,16 +168,17 @@ async def start_command(message: Message):
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
-    # Замените @ваш_бот на реальный юзернейм вашего бота
+    bot_username = (await bot.get_me()).username
     help_text = (
         "📖 <b>Помощь по игре</b>\n\n"
         "<b>Основные команды:</b>\n"
         "• /start — начать игру\n"
         "• /help — эта справка\n"
         "• /top — топ игроков\n"
-        "• /my — моя макака\n\n"
+        "• /my — моя макака\n"
+        "• /rename — сменить имя макаке\n\n"
         "<b>Инлайн-режим:</b>\n"
-        "Начните писать @ваш_бот в любом чате и выберите команду:\n"
+        f"Начните писать @{bot_username} в любом чате и выберите команду:\n"
         "• info — информация о макаке\n"
         "• feed — покормить\n"
         "• fight — найти бой\n"
@@ -223,8 +233,50 @@ async def top_command(message: Message):
         logger.error(f"Ошибка в top_command: {e}")
         await message.answer("❌ Ошибка при загрузке топа")
 
-# ========== ОБРАБОТЧИКИ КНОПОК ==========
+@dp.message(Command("rename"))
+async def rename_command(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    macaco = await db.get_or_create_macaco(user_id)
+    
+    await message.answer(
+        f"🐒 Текущее имя вашей макаки: <b>{macaco['name']}</b>\n\n"
+        f"✏️ Напишите новое имя (до 20 символов, можно использовать буквы, цифры, пробел, дефис и подчёркивание):",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(Rename.waiting_for_name)
 
+@dp.message(Rename.waiting_for_name)
+async def process_new_name(message: Message, state: FSMContext):
+    new_name = message.text.strip()
+    user_id = message.from_user.id
+    
+    # Проверки
+    if len(new_name) > 20:
+        await message.answer("❌ Имя слишком длинное! Максимум 20 символов.\nПопробуйте ещё раз:")
+        return
+    if len(new_name) < 2:
+        await message.answer("❌ Имя слишком короткое! Минимум 2 символа.\nПопробуйте ещё раз:")
+        return
+    if not all(c.isalnum() or c in ' _-' for c in new_name):
+        await message.answer("❌ Можно использовать только буквы, цифры, пробел, дефис и подчёркивание.\nПопробуйте ещё раз:")
+        return
+    
+    # Сохраняем новое имя в базу
+    async with aiosqlite.connect(db.DB_NAME) as conn:
+        await conn.execute(
+            'UPDATE macacos SET name = ? WHERE user_id = ?',
+            (new_name, user_id)
+        )
+        await conn.commit()
+    
+    await message.answer(
+        f"✅ Имя успешно изменено на <b>{new_name}</b>!",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.main_menu_kb()
+    )
+    await state.clear()
+
+# ========== ОБРАБОТЧИКИ КНОПОК ==========
 @dp.callback_query(F.data == "my_macaco")
 async def my_macaco_callback(callback: CallbackQuery):
     await show_my_macaco(callback.from_user.id, callback)
@@ -413,7 +465,8 @@ async def find_fight_callback(callback: CallbackQuery):
         if not opponent:
             await callback.message.edit_text(
                 "😕 <b>Соперников не найдено!</b>\n"
-                "Пригласите друзей!",
+                "Пригласите друзей в игру или создайте тестового бойца через терминал.\n\n"
+                "💡 <i>Один в поле не воин – нужна хотя бы ещё одна макака!</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb.main_menu_kb()
             )
@@ -423,10 +476,12 @@ async def find_fight_callback(callback: CallbackQuery):
         text = (
             f"⚔️ <b>Найден соперник!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🐒 <b>Вы:</b> {user_macaco['name']}\n"
-            f"🏋️ Вес: {user_macaco['weight']} кг\n\n"
+            f"🐒 <b>Ваша макака:</b> {user_macaco['name']}\n"
+            f"🏋️ Вес: {user_macaco['weight']} кг\n"
+            f"⭐ Уровень: {user_macaco['level']}\n\n"
             f"🥊 <b>Соперник:</b> {opponent['name']}\n"
             f"🏋️ Вес: {opponent['weight']} кг\n"
+            f"⭐ Уровень: {opponent['level']}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"👇 <b>Выберите ставку:</b>"
         )
@@ -446,9 +501,9 @@ async def find_fight_callback(callback: CallbackQuery):
     
     await callback.answer()
 
+# ---------- ВАЖНО: ОБРАБОТЧИК ВЫБОРА СТАВКИ ----------
 @dp.callback_query(F.data.startswith("bet_"))
 async def bet_selection_callback(callback: CallbackQuery):
-    # Формат callback_data: "bet_{amount}_{opponent_id}"
     parts = callback.data.split("_")
     if len(parts) != 3:
         await callback.answer("❌ Ошибка в данных ставки")
@@ -459,7 +514,6 @@ async def bet_selection_callback(callback: CallbackQuery):
         opponent_id = int(parts[2])
         user_id = callback.from_user.id
 
-        # Получаем макаку пользователя
         user_macaco = await db.get_or_create_macaco(user_id)
 
         # Проверяем, может ли макака сделать ставку
@@ -472,10 +526,10 @@ async def bet_selection_callback(callback: CallbackQuery):
             await callback.answer()
             return
 
-        # Проверяем вес соперника
+        # Получаем данные соперника для отображения имени
         async with aiosqlite.connect(db.DB_NAME) as conn:
             cursor = await conn.execute(
-                'SELECT weight FROM macacos WHERE macaco_id = ?',
+                'SELECT name, weight FROM macacos WHERE macaco_id = ?',
                 (opponent_id,)
             )
             opponent_data = await cursor.fetchone()
@@ -488,12 +542,13 @@ async def bet_selection_callback(callback: CallbackQuery):
             await callback.answer()
             return
 
-        opponent_weight = opponent_data[0]
+        opponent_name = opponent_data[0]
+        opponent_weight = opponent_data[1]
 
         if opponent_weight < bet_amount:
             await callback.message.edit_text(
                 f"❌ У соперника недостаточно веса!\n"
-                f"Вес соперника: {opponent_weight} кг\n"
+                f"Вес {opponent_name}: {opponent_weight} кг\n"
                 f"Ваша ставка: {bet_amount} кг",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb.main_menu_kb()
@@ -501,14 +556,14 @@ async def bet_selection_callback(callback: CallbackQuery):
             await callback.answer()
             return
 
-        # Показываем экран подтверждения боя
+        # Показываем экран подтверждения
         confirm_text = (
             f"🥊 <b>Подтверждение боя</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🐒 <b>Вы:</b> {user_macaco['name']}\n"
+            f"🐒 <b>Ваш боец:</b> {user_macaco['name']}\n"
             f"🏋️ Вес: {user_macaco['weight']} кг\n"
             f"💰 Ставка: {bet_amount} кг\n\n"
-            f"🥊 <b>Соперник:</b> (ID: {opponent_id})\n"
+            f"🥊 <b>Соперник:</b> {opponent_name}\n"
             f"🏋️ Вес: {opponent_weight} кг\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<i>Победитель забирает {bet_amount} кг у проигравшего!</i>"
@@ -528,7 +583,7 @@ async def bet_selection_callback(callback: CallbackQuery):
         )
 
     await callback.answer()
-    
+
 @dp.callback_query(F.data.startswith("start_fight_"))
 async def start_fight_callback(callback: CallbackQuery):
     parts = callback.data.split("_")
@@ -547,6 +602,22 @@ async def start_fight_callback(callback: CallbackQuery):
         if not can_bet:
             await callback.message.edit_text(
                 f"❌ {msg}",
+                reply_markup=kb.main_menu_kb()
+            )
+            await callback.answer()
+            return
+        
+        # Получаем данные соперника
+        async with aiosqlite.connect(db.DB_NAME) as conn:
+            cursor = await conn.execute(
+                'SELECT macaco_id, name, weight FROM macacos WHERE macaco_id = ?',
+                (opponent_id,)
+            )
+            opponent_data = await cursor.fetchone()
+        
+        if not opponent_data:
+            await callback.message.edit_text(
+                "❌ Соперник больше не доступен",
                 reply_markup=kb.main_menu_kb()
             )
             await callback.answer()
@@ -581,10 +652,10 @@ async def start_fight_callback(callback: CallbackQuery):
         
         if winner_id == user_macaco['id']:
             result_gif = 'win'
-            result_text = f"🎉 <b>ПОБЕДА!</b> Вы забираете {bet_amount} кг!"
+            result_text = f"🎉 <b>ПОБЕДА!</b> Ваша макака забирает {bet_amount} кг у {opponent_data[1]}!"
         else:
             result_gif = 'lose'
-            result_text = f"😔 <b>ПОРАЖЕНИЕ</b> Вы теряете {bet_amount} кг."
+            result_text = f"😔 <b>ПОРАЖЕНИЕ</b> Ваша макака теряет {bet_amount} кг в пользу {opponent_data[1]}."
         
         # Гифка результата
         gif_info = cfg.get_gif_info('fight', result_gif)
@@ -686,7 +757,6 @@ async def help_info_callback(callback: CallbackQuery):
     await help_command(callback.message)
 
 # ========== ИНЛАЙН-РЕЖИМ ==========
-
 @dp.inline_query()
 async def inline_mode(inline_query: InlineQuery):
     query = inline_query.query.lower().strip()
@@ -803,7 +873,6 @@ async def inline_mode(inline_query: InlineQuery):
         await inline_query.answer([], cache_time=60)
 
 # ========== ЗАПУСК ==========
-
 async def main():
     logger.info("🤖 Бот 'Боевые Макаки PRO' запускается...")
     
@@ -822,4 +891,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
