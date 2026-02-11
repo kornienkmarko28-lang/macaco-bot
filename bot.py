@@ -15,8 +15,8 @@ from aiogram.types import (
     Message, CallbackQuery, FSInputFile,
     InlineQuery, InlineQueryResultArticle,
     InputTextMessageContent
-    InlineKeyboardButton, InlineKeyboardMarkup
 )
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
@@ -1103,4 +1103,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
