@@ -40,15 +40,15 @@ def food_info_kb(food_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # ========== МЕНЮ ВЫБОРА СТАВКИ ДЛЯ ВЫЗОВА ==========
-def bet_selection_challenge_kb(opponent_id: int) -> InlineKeyboardMarkup:
+def bet_selection_challenge_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton(text="1 кг", callback_data=f"challenge_bet_1"),
-            InlineKeyboardButton(text="3 кг", callback_data=f"challenge_bet_3")
+            InlineKeyboardButton(text="1 кг", callback_data="challenge_bet_1"),
+            InlineKeyboardButton(text="3 кг", callback_data="challenge_bet_3")
         ],
         [
-            InlineKeyboardButton(text="5 кг", callback_data=f"challenge_bet_5"),
-            InlineKeyboardButton(text="10 кг", callback_data=f"challenge_bet_10")
+            InlineKeyboardButton(text="5 кг", callback_data="challenge_bet_5"),
+            InlineKeyboardButton(text="10 кг", callback_data="challenge_bet_10")
         ],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_fight")]
     ]
