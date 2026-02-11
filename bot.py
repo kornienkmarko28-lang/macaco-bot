@@ -17,6 +17,7 @@ from aiogram.types import (
     InputTextMessageContent
 )
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 
 import database as db
 import keyboards as kb
@@ -43,9 +44,19 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ========== FSM ДЛЯ ПЕРЕИМЕНОВАНИЯ ==========
+# ========== FSM ==========
 class Rename(StatesGroup):
     waiting_for_name = State()
+
+class Challenge(StatesGroup):
+    waiting_for_opponent = State()
+    waiting_for_bet = State()
+
+# ========== ХРАНИЛИЩЕ АКТИВНЫХ ВЫЗОВОВ ==========
+# Структура: {challenge_id: {'challenger_id': int, 'opponent_id': int, 
+#                            'bet': int, 'message': Message, 'task': asyncio.Task}}
+active_challenges = {}
+challenge_counter = 0
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 async def show_my_macaco(user_id: int, source):
@@ -156,6 +167,7 @@ async def start_command(message: Message):
         f"• Инлайн-режим — пишите @{bot_username} команда\n"
         "• Анимация для каждого действия\n"
         "• ✏️ /rename — дай имя своей макаке!\n"
+        "• ⚔️ Вызов на бой — честные поединки с подтверждением\n"
         "\n"
         "👇 <b>Выбери действие:</b>"
     )
@@ -177,11 +189,17 @@ async def help_command(message: Message):
         "• /top — топ игроков\n"
         "• /my — моя макака\n"
         "• /rename — сменить имя макаке\n\n"
+        "<b>Боевая система:</b>\n"
+        "1. Нажмите «Вызвать на бой» в меню.\n"
+        "2. Выберите соперника из списка.\n"
+        "3. Выберите ставку (1, 3, 5, 10 кг).\n"
+        "4. Соперник получит вызов и должен принять в течение 60 секунд.\n"
+        "5. Если соперник принимает — начинается бой!\n\n"
         "<b>Инлайн-режим:</b>\n"
         f"Начните писать @{bot_username} в любом чате и выберите команду:\n"
         "• info — информация о макаке\n"
         "• feed — покормить\n"
-        "• fight — найти бой\n"
+        "• fight — список соперников\n"
         "• top — топ игроков\n\n"
         "<b>Виды еды:</b>\n"
         "• 🍌 Банан: +1 кг, КД 5ч\n"
@@ -250,7 +268,6 @@ async def process_new_name(message: Message, state: FSMContext):
     new_name = message.text.strip()
     user_id = message.from_user.id
     
-    # Проверки
     if len(new_name) > 20:
         await message.answer("❌ Имя слишком длинное! Максимум 20 символов.\nПопробуйте ещё раз:")
         return
@@ -261,7 +278,6 @@ async def process_new_name(message: Message, state: FSMContext):
         await message.answer("❌ Можно использовать только буквы, цифры, пробел, дефис и подчёркивание.\nПопробуйте ещё раз:")
         return
     
-    # Сохраняем новое имя в базу
     async with aiosqlite.connect(db.DB_NAME) as conn:
         await conn.execute(
             'UPDATE macacos SET name = ? WHERE user_id = ?',
@@ -357,7 +373,6 @@ async def feed_with_food_callback(callback: CallbackQuery):
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Отправка гифки
         gif_types = {1: 'banana', 2: 'meat', 3: 'cake', 4: 'salad'}
         gif_type = gif_types.get(food_id, 'banana')
         gif_info = cfg.get_gif_info('feeding', gif_type)
@@ -454,243 +469,6 @@ async def daily_reward_callback(callback: CallbackQuery):
     
     await callback.answer()
 
-@dp.callback_query(F.data == "find_fight")
-async def find_fight_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    
-    try:
-        user_macaco = await db.get_or_create_macaco(user_id)
-        opponent = await db.find_opponent(user_macaco['id'])
-        
-        if not opponent:
-            await callback.message.edit_text(
-                "😕 <b>Соперников не найдено!</b>\n"
-                "Пригласите друзей в игру или создайте тестового бойца через терминал.\n\n"
-                "💡 <i>Один в поле не воин – нужна хотя бы ещё одна макака!</i>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb.main_menu_kb()
-            )
-            await callback.answer()
-            return
-        
-        text = (
-            f"⚔️ <b>Найден соперник!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🐒 <b>Ваша макака:</b> {user_macaco['name']}\n"
-            f"🏋️ Вес: {user_macaco['weight']} кг\n"
-            f"⭐ Уровень: {user_macaco['level']}\n\n"
-            f"🥊 <b>Соперник:</b> {opponent['name']}\n"
-            f"🏋️ Вес: {opponent['weight']} кг\n"
-            f"⭐ Уровень: {opponent['level']}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"👇 <b>Выберите ставку:</b>"
-        )
-        
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.bet_selection_kb(opponent['id'])
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка в find_fight_callback: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при поиске боя",
-            reply_markup=kb.main_menu_kb()
-        )
-    
-    await callback.answer()
-
-# ---------- ВАЖНО: ОБРАБОТЧИК ВЫБОРА СТАВКИ ----------
-@dp.callback_query(F.data.startswith("bet_"))
-async def bet_selection_callback(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    if len(parts) != 3:
-        await callback.answer("❌ Ошибка в данных ставки")
-        return
-
-    try:
-        bet_amount = int(parts[1])
-        opponent_id = int(parts[2])
-        user_id = callback.from_user.id
-
-        user_macaco = await db.get_or_create_macaco(user_id)
-
-        # Проверяем, может ли макака сделать ставку
-        can_bet, msg = await db.can_make_bet(user_macaco['id'], bet_amount)
-        if not can_bet:
-            await callback.message.edit_text(
-                f"❌ {msg}",
-                reply_markup=kb.main_menu_kb()
-            )
-            await callback.answer()
-            return
-
-        # Получаем данные соперника для отображения имени
-        async with aiosqlite.connect(db.DB_NAME) as conn:
-            cursor = await conn.execute(
-                'SELECT name, weight FROM macacos WHERE macaco_id = ?',
-                (opponent_id,)
-            )
-            opponent_data = await cursor.fetchone()
-
-        if not opponent_data:
-            await callback.message.edit_text(
-                "❌ Соперник больше не доступен",
-                reply_markup=kb.main_menu_kb()
-            )
-            await callback.answer()
-            return
-
-        opponent_name = opponent_data[0]
-        opponent_weight = opponent_data[1]
-
-        if opponent_weight < bet_amount:
-            await callback.message.edit_text(
-                f"❌ У соперника недостаточно веса!\n"
-                f"Вес {opponent_name}: {opponent_weight} кг\n"
-                f"Ваша ставка: {bet_amount} кг",
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb.main_menu_kb()
-            )
-            await callback.answer()
-            return
-
-        # Показываем экран подтверждения
-        confirm_text = (
-            f"🥊 <b>Подтверждение боя</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🐒 <b>Ваш боец:</b> {user_macaco['name']}\n"
-            f"🏋️ Вес: {user_macaco['weight']} кг\n"
-            f"💰 Ставка: {bet_amount} кг\n\n"
-            f"🥊 <b>Соперник:</b> {opponent_name}\n"
-            f"🏋️ Вес: {opponent_weight} кг\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>Победитель забирает {bet_amount} кг у проигравшего!</i>"
-        )
-
-        await callback.message.edit_text(
-            confirm_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.fight_confirmation_kb(opponent_id, bet_amount)
-        )
-
-    except Exception as e:
-        logger.error(f"Ошибка в bet_selection_callback: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при выборе ставки",
-            reply_markup=kb.main_menu_kb()
-        )
-
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("start_fight_"))
-async def start_fight_callback(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    if len(parts) != 4:
-        await callback.answer("❌ Ошибка данных")
-        return
-    
-    try:
-        opponent_id = int(parts[2])
-        bet_amount = int(parts[3])
-        user_id = callback.from_user.id
-        
-        user_macaco = await db.get_or_create_macaco(user_id)
-        
-        can_bet, msg = await db.can_make_bet(user_macaco['id'], bet_amount)
-        if not can_bet:
-            await callback.message.edit_text(
-                f"❌ {msg}",
-                reply_markup=kb.main_menu_kb()
-            )
-            await callback.answer()
-            return
-        
-        # Получаем данные соперника
-        async with aiosqlite.connect(db.DB_NAME) as conn:
-            cursor = await conn.execute(
-                'SELECT macaco_id, name, weight FROM macacos WHERE macaco_id = ?',
-                (opponent_id,)
-            )
-            opponent_data = await cursor.fetchone()
-        
-        if not opponent_data:
-            await callback.message.edit_text(
-                "❌ Соперник больше не доступен",
-                reply_markup=kb.main_menu_kb()
-            )
-            await callback.answer()
-            return
-        
-        # Гифка начала боя
-        gif_info = cfg.get_gif_info('fight', 'start')
-        if gif_info and cfg.check_gif_exists('fight', 'start'):
-            anim = FSInputFile(gif_info['path'])
-            await callback.message.answer_animation(
-                anim,
-                caption=gif_info['caption'],
-                parse_mode=ParseMode.HTML
-            )
-        
-        # Симуляция боя
-        winner_id = random.choice([user_macaco['id'], opponent_id])
-        loser_id = opponent_id if winner_id == user_macaco['id'] else user_macaco['id']
-        
-        await db.update_weight_after_fight(winner_id, loser_id, bet_amount)
-        await db.record_fight(user_macaco['id'], opponent_id, winner_id, bet_amount)
-        
-        exp_gain = 25 if winner_id == user_macaco['id'] else 10
-        async with aiosqlite.connect(db.DB_NAME) as conn:
-            await conn.execute(
-                'UPDATE macacos SET experience = experience + ? WHERE macaco_id = ?',
-                (exp_gain, winner_id)
-            )
-            await conn.commit()
-        
-        user_macaco = await db.get_or_create_macaco(user_id)
-        
-        if winner_id == user_macaco['id']:
-            result_gif = 'win'
-            result_text = f"🎉 <b>ПОБЕДА!</b> Ваша макака забирает {bet_amount} кг у {opponent_data[1]}!"
-        else:
-            result_gif = 'lose'
-            result_text = f"😔 <b>ПОРАЖЕНИЕ</b> Ваша макака теряет {bet_amount} кг в пользу {opponent_data[1]}."
-        
-        # Гифка результата
-        gif_info = cfg.get_gif_info('fight', result_gif)
-        if gif_info and cfg.check_gif_exists('fight', result_gif):
-            anim = FSInputFile(gif_info['path'])
-            await callback.message.answer_animation(
-                anim,
-                caption=gif_info['caption'],
-                parse_mode=ParseMode.HTML
-            )
-        
-        result_msg = (
-            f"{'🎉' if winner_id == user_macaco['id'] else '😔'} <b>БОЙ ЗАВЕРШЁН!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{result_text}\n\n"
-            f"🏋️ Ваш вес: <b>{user_macaco['weight']} кг</b>\n"
-            f"📊 Опыт: +{exp_gain}\n"
-            f"━━━━━━━━━━━━━━━━━━━━"
-        )
-        
-        await callback.message.edit_text(
-            result_msg,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb.after_fight_kb()
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка в start_fight_callback: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка во время боя",
-            reply_markup=kb.main_menu_kb()
-        )
-    
-    await callback.answer()
-
 @dp.callback_query(F.data == "walk_macaco")
 async def walk_macaco_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -734,6 +512,439 @@ async def walk_macaco_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "top_weight")
 async def top_weight_callback(callback: CallbackQuery):
     await show_top_players(callback)
+
+# ========== НОВАЯ СИСТЕМА ВЫЗОВА НА БОЙ ==========
+
+@dp.callback_query(F.data == "challenge_fight")
+async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
+    """Показать список доступных соперников"""
+    user_id = callback.from_user.id
+    user_macaco = await db.get_or_create_macaco(user_id)
+    
+    # Получаем всех других макак
+    async with aiosqlite.connect(db.DB_NAME) as conn:
+        cursor = await conn.execute('''
+            SELECT macaco_id, name, weight, level, user_id 
+            FROM macacos 
+            WHERE user_id != ?
+        ''', (user_id,))
+        opponents = await cursor.fetchall()
+    
+    if not opponents:
+        await callback.message.edit_text(
+            "😕 <b>Нет доступных соперников!</b>\n"
+            "Пригласите друзей в игру!",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        return
+    
+    # Сохраняем список соперников в FSM
+    await state.update_data(opponents_list=opponents)
+    
+    # Формируем клавиатуру с соперниками
+    opponent_buttons = []
+    for opp in opponents[:10]:  # максимум 10 соперников на странице
+        opp_id, name, weight, level, _ = opp
+        button_text = f"{name} | 🏋️ {weight} кг | ⭐ {level}"
+        opponent_buttons.append([
+            InlineKeyboardButton(text=button_text, callback_data=f"select_opp_{opp_id}")
+        ])
+    
+    # Добавляем кнопку "Назад"
+    opponent_buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=opponent_buttons)
+    
+    await callback.message.edit_text(
+        "🥊 <b>Выберите соперника:</b>\n\n"
+        "Нажмите на имя макаки, чтобы вызвать её на бой.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=markup
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("select_opp_"))
+async def select_opponent_callback(callback: CallbackQuery, state: FSMContext):
+    """Выбор соперника -> запрос ставки"""
+    opponent_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    # Получаем данные соперника
+    async with aiosqlite.connect(db.DB_NAME) as conn:
+        cursor = await conn.execute(
+            'SELECT name, weight, level FROM macacos WHERE macaco_id = ?',
+            (opponent_id,)
+        )
+        opponent = await cursor.fetchone()
+    
+    if not opponent:
+        await callback.message.edit_text(
+            "❌ Соперник больше не доступен",
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        return
+    
+    # Сохраняем ID соперника в FSM
+    await state.update_data(challenge_opponent_id=opponent_id, opponent_name=opponent[0])
+    
+    # Показываем выбор ставки
+    text = (
+        f"⚔️ <b>Вызов на бой</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🥊 <b>Соперник:</b> {opponent[0]}\n"
+        f"🏋️ Вес: {opponent[1]} кг\n"
+        f"⭐ Уровень: {opponent[2]}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👇 <b>Выберите ставку:</b>"
+    )
+    
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.bet_selection_challenge_kb(opponent_id)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("challenge_bet_"))
+async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
+    """Выбор ставки -> отправка вызова сопернику"""
+    parts = callback.data.split("_")
+    if len(parts) != 3:
+        await callback.answer("❌ Ошибка данных")
+        return
+    
+    bet_amount = int(parts[2])
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    opponent_id = data.get('challenge_opponent_id')
+    
+    if not opponent_id:
+        await callback.message.edit_text(
+            "❌ Ошибка: не выбран соперник",
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        await state.clear()
+        return
+    
+    # Проверяем свою макаку
+    user_macaco = await db.get_or_create_macaco(user_id)
+    can_bet, msg = await db.can_make_bet(user_macaco['id'], bet_amount)
+    if not can_bet:
+        await callback.message.edit_text(
+            f"❌ {msg}",
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        return
+    
+    # Проверяем соперника (вес)
+    async with aiosqlite.connect(db.DB_NAME) as conn:
+        cursor = await conn.execute(
+            'SELECT name, weight, user_id FROM macacos WHERE macaco_id = ?',
+            (opponent_id,)
+        )
+        opponent_data = await cursor.fetchone()
+    
+    if not opponent_data:
+        await callback.message.edit_text(
+            "❌ Соперник больше не доступен",
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        return
+    
+    opponent_name, opponent_weight, opponent_user_id = opponent_data
+    
+    if opponent_weight < bet_amount:
+        await callback.message.edit_text(
+            f"❌ У соперника недостаточно веса!\n"
+            f"Вес {opponent_name}: {opponent_weight} кг\n"
+            f"Ваша ставка: {bet_amount} кг",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        return
+    
+    # Создаём уникальный ID вызова
+    global challenge_counter
+    challenge_counter += 1
+    challenge_id = f"{user_id}_{opponent_id}_{challenge_counter}"
+    
+    # Отправляем вызов сопернику
+    challenger_name = user_macaco['name']
+    
+    challenge_text = (
+        f"⚔️ <b>Вас вызывают на бой!</b>\n\n"
+        f"🐒 <b>Противник:</b> {challenger_name}\n"
+        f"🏋️ Вес: {user_macaco['weight']} кг\n"
+        f"⭐ Уровень: {user_macaco['level']}\n"
+        f"💰 <b>Ставка:</b> {bet_amount} кг\n\n"
+        f"<i>У вас есть 60 секунд, чтобы принять решение.</i>"
+    )
+    
+    try:
+        challenge_message = await bot.send_message(
+            opponent_user_id,
+            challenge_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb.challenge_response_kb(challenge_id, bet_amount)
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отправить вызов: {e}")
+        await callback.message.edit_text(
+            "❌ Не удалось отправить вызов. Возможно, соперник ещё не запускал бота.",
+            reply_markup=kb.main_menu_kb()
+        )
+        await callback.answer()
+        return
+    
+    # Создаём задачу таймаута
+    async def timeout_challenge():
+        await asyncio.sleep(60)
+        if challenge_id in active_challenges:
+            del active_challenges[challenge_id]
+            try:
+                await challenge_message.edit_text(
+                    f"⏳ Время вышло. Вызов от {challenger_name} отклонён автоматически.",
+                    reply_markup=None
+                )
+                await callback.message.edit_text(
+                    f"⏳ Соперник не ответил на вызов в течение 60 секунд.",
+                    reply_markup=kb.main_menu_kb()
+                )
+            except:
+                pass
+    
+    task = asyncio.create_task(timeout_challenge())
+    
+    # Сохраняем вызов
+    active_challenges[challenge_id] = {
+        'challenger_id': user_id,
+        'challenger_macaco_id': user_macaco['id'],
+        'challenger_name': challenger_name,
+        'opponent_id': opponent_user_id,
+        'opponent_macaco_id': opponent_id,
+        'opponent_name': opponent_name,
+        'bet': bet_amount,
+        'message': challenge_message,
+        'task': task,
+        'challenge_msg_id': callback.message.message_id,
+        'challenge_chat_id': callback.message.chat.id
+    }
+    
+    # Уведомляем инициатора
+    await callback.message.edit_text(
+        f"✅ <b>Вызов отправлен!</b>\n\n"
+        f"🥊 Соперник: {opponent_name}\n"
+        f"💰 Ставка: {bet_amount} кг\n\n"
+        f"Ожидайте ответа... (60 секунд)",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.main_menu_kb()
+    )
+    await callback.answer()
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("accept_fight_"))
+async def accept_fight_callback(callback: CallbackQuery):
+    """Соперник принял вызов"""
+    parts = callback.data.split("_")
+    if len(parts) != 3:
+        await callback.answer("❌ Ошибка данных")
+        return
+    
+    challenge_id = parts[2]
+    
+    if challenge_id not in active_challenges:
+        await callback.message.edit_text(
+            "❌ Этот вызов уже недействителен (возможно, истекло время).",
+            reply_markup=None
+        )
+        await callback.answer()
+        return
+    
+    challenge = active_challenges[challenge_id]
+    opponent_user_id = callback.from_user.id
+    
+    # Проверяем, что это тот самый соперник
+    if opponent_user_id != challenge['opponent_id']:
+        await callback.answer("❌ Это не ваш вызов!")
+        return
+    
+    # Отменяем таймаут
+    challenge['task'].cancel()
+    
+    # Получаем актуальные данные макак
+    challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
+    opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
+    
+    bet = challenge['bet']
+    
+    # Проверяем, что у обоих достаточно веса
+    if challenger_macaco['weight'] < bet:
+        await callback.message.edit_text(
+            f"❌ У противника ({challenge['challenger_name']}) уже недостаточно веса для этой ставки.",
+            reply_markup=kb.main_menu_kb()
+        )
+        # Уведомляем инициатора
+        try:
+            await bot.send_message(
+                challenge['challenger_id'],
+                f"❌ Ваш вызов отклонён, так как у вас стало меньше {bet} кг."
+            )
+        except:
+            pass
+        del active_challenges[challenge_id]
+        await callback.answer()
+        return
+    
+    if opponent_macaco['weight'] < bet:
+        await callback.message.edit_text(
+            f"❌ У вас недостаточно веса для этой ставки!",
+            reply_markup=kb.main_menu_kb()
+        )
+        # Уведомляем инициатора
+        try:
+            await bot.send_message(
+                challenge['challenger_id'],
+                f"❌ {opponent_macaco['name']} не смог принять вызов: недостаточно веса."
+            )
+        except:
+            pass
+        del active_challenges[challenge_id]
+        await callback.answer()
+        return
+    
+    # ВСЁ ГОТОВО -> НАЧИНАЕМ БОЙ!
+    
+    # Отправляем гифку начала боя
+    gif_info = cfg.get_gif_info('fight', 'start')
+    if gif_info and cfg.check_gif_exists('fight', 'start'):
+        anim = FSInputFile(gif_info['path'])
+        await callback.message.answer_animation(
+            anim,
+            caption=gif_info['caption'],
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Симуляция боя
+    winner_id = random.choice([challenger_macaco['id'], opponent_macaco['id']])
+    loser_id = opponent_macaco['id'] if winner_id == challenger_macaco['id'] else challenger_macaco['id']
+    
+    # Обновляем веса
+    await db.update_weight_after_fight(winner_id, loser_id, bet)
+    await db.record_fight(challenger_macaco['id'], opponent_macaco['id'], winner_id, bet)
+    
+    # Опыт
+    exp_gain = 25 if winner_id == challenger_macaco['id'] else 10
+    async with aiosqlite.connect(db.DB_NAME) as conn:
+        await conn.execute(
+            'UPDATE macacos SET experience = experience + ? WHERE macaco_id = ?',
+            (exp_gain, winner_id)
+        )
+        await conn.commit()
+    
+    # Получаем обновлённые данные
+    challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
+    opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
+    
+    # Определяем победителя и проигравшего для отображения
+    if winner_id == challenger_macaco['id']:
+        winner_name = challenger_macaco['name']
+        loser_name = opponent_macaco['name']
+        result_gif = 'win'
+        result_text = f"🎉 <b>ПОБЕДА!</b> {winner_name} победил {loser_name} и забрал {bet} кг!"
+    else:
+        winner_name = opponent_macaco['name']
+        loser_name = challenger_macaco['name']
+        result_gif = 'lose'
+        result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {loser_name} проиграл {winner_name} и потерял {bet} кг."
+    
+    # Гифка результата
+    gif_info = cfg.get_gif_info('fight', result_gif)
+    if gif_info and cfg.check_gif_exists('fight', result_gif):
+        anim = FSInputFile(gif_info['path'])
+        await callback.message.answer_animation(
+            anim,
+            caption=gif_info['caption'],
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Сообщаем результат обоим
+    result_msg = (
+        f"{'🎉' if winner_id == challenger_macaco['id'] else '😔'} <b>БОЙ ЗАВЕРШЁН!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{result_text}\n\n"
+        f"🏋️ {challenger_macaco['name']}: {challenger_macaco['weight']} кг\n"
+        f"🏋️ {opponent_macaco['name']}: {opponent_macaco['weight']} кг\n"
+        f"📊 Победитель получает +{exp_gain} опыта\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    
+    # Редактируем сообщение с вызовом
+    await callback.message.edit_text(
+        result_msg,
+        parse_mode=ParseMode.HTML,
+        reply_markup=None
+    )
+    
+    # Отправляем результат инициатору
+    try:
+        await bot.send_message(
+            challenge['challenger_id'],
+            result_msg,
+            parse_mode=ParseMode.HTML
+        )
+    except:
+        pass
+    
+    # Удаляем вызов из активных
+    del active_challenges[challenge_id]
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("decline_fight_"))
+async def decline_fight_callback(callback: CallbackQuery):
+    """Соперник отклонил вызов"""
+    parts = callback.data.split("_")
+    if len(parts) != 3:
+        await callback.answer("❌ Ошибка данных")
+        return
+    
+    challenge_id = parts[2]
+    
+    if challenge_id not in active_challenges:
+        await callback.message.edit_text(
+            "❌ Этот вызов уже недействителен.",
+            reply_markup=None
+        )
+        await callback.answer()
+        return
+    
+    challenge = active_challenges[challenge_id]
+    
+    # Отменяем таймаут
+    challenge['task'].cancel()
+    
+    # Уведомляем инициатора
+    try:
+        await bot.send_message(
+            challenge['challenger_id'],
+            f"😕 {challenge['opponent_name']} отклонил ваш вызов на бой."
+        )
+    except:
+        pass
+    
+    await callback.message.edit_text(
+        f"❌ Вы отклонили вызов от {challenge['challenger_name']}.",
+        reply_markup=None
+    )
+    
+    del active_challenges[challenge_id]
+    await callback.answer()
 
 @dp.callback_query(F.data == "cancel_fight")
 async def cancel_fight_callback(callback: CallbackQuery):
@@ -799,13 +1010,13 @@ async def inline_mode(inline_query: InlineQuery):
             )
             results.append(result)
         
-        elif query in ["fight", "бой", "драка"]:
+        elif query in ["fight", "бой", "вызов"]:
             result = InlineQueryResultArticle(
                 id="3",
-                title="⚔️ Найти бой",
-                description="Поиск соперника",
+                title="⚔️ Вызвать на бой",
+                description="Выберите соперника",
                 input_message_content=InputTextMessageContent(
-                    message_text="⚔️ <b>Поиск соперника...</b>",
+                    message_text="⚔️ <b>Вызов на бой</b>\nИспользуйте кнопки для выбора соперника.",
                     parse_mode=ParseMode.HTML
                 ),
                 reply_markup=kb.inline_actions_kb(0),
