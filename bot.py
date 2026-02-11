@@ -81,11 +81,14 @@ async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", par
         return False
 
 async def show_my_macaco(user_id: int, source):
-    """Показать информацию о макаке пользователя"""
+    """Показать информацию о макаке пользователя (с применением распада настроения)"""
     try:
         if isinstance(source, CallbackQuery):
             await source.answer()
         
+        # Применяем снижение настроения от времени
+        macaco = await db.get_or_create_macaco(user_id)
+        await db.apply_happiness_decay(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
         
         can_daily, daily_time = await db.can_get_daily(macaco['id'])
@@ -183,7 +186,9 @@ async def start_command(message: Message):
         'last_name': user.last_name
     }
     await db.get_or_create_user(user_data)
-    await db.get_or_create_macaco(user.id)
+    macaco = await db.get_or_create_macaco(user.id)
+    # Применяем распад настроения при старте
+    await db.apply_happiness_decay(macaco['id'])
     
     bot_username = (await bot.get_me()).username
     
@@ -196,7 +201,8 @@ async def start_command(message: Message):
         "• Анимация для каждого действия\n"
         "• ✏️ /rename — дай имя своей макаке!\n"
         "• ⚔️ Вызов на бой — честные поединки с подтверждением\n"
-        "• 📈 Уровни: опыт → 100 → +1 уровень\n"
+        "• 😊 Настроение: падает со временем и при проигрыше\n"
+        "• 🚶 Прогулка — восстанавливает настроение до 100!\n"
         "\n"
         "👇 <b>Выбери действие:</b>"
     )
@@ -223,7 +229,12 @@ async def help_command(message: Message):
         "2. Выберите соперника из списка.\n"
         "3. Выберите ставку (1, 3, 5, 10 кг).\n"
         "4. Соперник получит вызов и должен принять в течение 60 секунд.\n"
-        "5. Если соперник принимает — начинается бой!\n\n"
+        "5. Если соперник принимает — начинается бой!\n"
+        "6. При проигрыше настроение падает на 20.\n\n"
+        "<b>Настроение:</b>\n"
+        "• Падает на 10 за каждый час бездействия.\n"
+        "• При 0 макака отказывается есть.\n"
+        "• Прогулка восстанавливает настроение до 100.\n\n"
         "<b>Инлайн-режим:</b>\n"
         f"Начните писать @{bot_username} в любом чате и выберите команду:\n"
         "• info — информация о макаке\n"
@@ -231,10 +242,10 @@ async def help_command(message: Message):
         "• fight — список соперников\n"
         "• top — топ игроков\n\n"
         "<b>Виды еды:</b>\n"
-        "• 🍌 Банан: +1 кг, КД 5ч\n"
-        "• 🥩 Мясо: +3 кг, КД 8ч\n"
-        "• 🍰 Торт: +5 кг, КД 12ч\n"
-        "• 🥗 Салат: +2 кг, КД 6ч"
+        "• 🍌 Банан: +1 кг, КД 5ч, +10 😊\n"
+        "• 🥩 Мясо: +3 кг, КД 8ч, +5 😊\n"
+        "• 🍰 Торт: +5 кг, КД 12ч, +20 😊\n"
+        "• 🥗 Салат: +2 кг, КД 6ч, +15 😊"
     )
     
     await message.answer(
@@ -331,10 +342,10 @@ async def my_macaco_callback(callback: CallbackQuery):
 async def select_food_callback(callback: CallbackQuery):
     text = (
         "🍽️ <b>Выберите еду для макаки:</b>\n\n"
-        "🍌 Банан: +1 кг, КД 5ч\n"
-        "🥩 Мясо: +3 кг, КД 8ч\n"
-        "🍰 Торт: +5 кг, КД 12ч\n"
-        "🥗 Салат: +2 кг, КД 6ч"
+        "🍌 Банан: +1 кг, КД 5ч, +10 😊\n"
+        "🥩 Мясо: +3 кг, КД 8ч, +5 😊\n"
+        "🍰 Торт: +5 кг, КД 12ч, +20 😊\n"
+        "🥗 Салат: +2 кг, КД 6ч, +15 😊"
     )
     await callback.message.edit_text(
         text,
@@ -377,6 +388,21 @@ async def feed_with_food_callback(callback: CallbackQuery):
     
     try:
         macaco = await db.get_or_create_macaco(user_id)
+        # Применяем распад настроения
+        await db.apply_happiness_decay(macaco['id'])
+        macaco = await db.get_or_create_macaco(user_id)
+        
+        # Проверяем, не расстроена ли макака (настроение 0)
+        if macaco['happiness'] <= 0:
+            await callback.message.edit_text(
+                "🥺 <b>Я расстроена…</b>\n"
+                "Сначала подними мне настроение прогулкой!",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb.main_menu_kb()
+            )
+            await callback.answer()
+            return
+        
         food_info = await db.get_food_info(food_id)
         
         if not food_info:
@@ -403,7 +429,7 @@ async def feed_with_food_callback(callback: CallbackQuery):
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Отправка гифки (с улучшенной обработкой)
+        # Отправка гифки
         gif_types = {1: 'banana', 2: 'meat', 3: 'cake', 4: 'salad'}
         gif_name = gif_types.get(food_id, 'banana')
         gif_sent = await send_gif(
@@ -424,7 +450,8 @@ async def feed_with_food_callback(callback: CallbackQuery):
         await callback.message.edit_text(
             f"✅ <b>Макака накормлена!</b>\n\n"
             f"🍽️ {food_info['name']}\n"
-            f"🏋️ Вес: <b>{macaco['weight']} кг</b>",
+            f"🏋️ Вес: <b>{macaco['weight']} кг</b>\n"
+            f"😊 Настроение: {macaco['happiness']}/100",
             parse_mode=ParseMode.HTML,
             reply_markup=kb.main_menu_kb()
         )
@@ -444,6 +471,9 @@ async def daily_reward_callback(callback: CallbackQuery):
     
     try:
         macaco = await db.get_or_create_macaco(user_id)
+        await db.apply_happiness_decay(macaco['id'])
+        macaco = await db.get_or_create_macaco(user_id)
+        
         can_daily, time_left = await db.can_get_daily(macaco['id'])
         
         if not can_daily:
@@ -463,7 +493,6 @@ async def daily_reward_callback(callback: CallbackQuery):
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Гифка награды
         gif_sent = await send_gif(
             callback.message.chat.id,
             'daily',
@@ -484,7 +513,8 @@ async def daily_reward_callback(callback: CallbackQuery):
             f"✅ <b>Ежедневная награда получена!</b>\n\n"
             f"🎁 +1 кг к весу\n"
             f"😊 +5 к настроению\n"
-            f"🏋️ Текущий вес: <b>{macaco['weight']} кг</b>",
+            f"🏋️ Текущий вес: <b>{macaco['weight']} кг</b>\n"
+            f"😊 Настроение: {macaco['happiness']}/100",
             parse_mode=ParseMode.HTML,
             reply_markup=kb.main_menu_kb()
         )
@@ -503,15 +533,12 @@ async def walk_macaco_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     try:
-        # Ограничиваем настроение 100
-        async with aiosqlite.connect(db.DB_NAME) as conn:
-            await conn.execute('''
-                UPDATE macacos 
-                SET happiness = MIN(100, happiness + 15) 
-                WHERE user_id = ?
-            ''', (user_id,))
-            await conn.commit()
+        macaco = await db.get_or_create_macaco(user_id)
+        # Применяем распад настроения перед прогулкой
+        await db.apply_happiness_decay(macaco['id'])
         
+        # Прогулка: восстанавливаем настроение до 100
+        await db.set_happiness(macaco['id'], 100)
         macaco = await db.get_or_create_macaco(user_id)
         
         # Гифка прогулки
@@ -530,8 +557,8 @@ async def walk_macaco_callback(callback: CallbackQuery):
         
         await callback.message.edit_text(
             f"🚶 <b>Прогулка успешна!</b>\n\n"
-            f"😊 Настроение: +15\n"
-            f"Текущее настроение: {macaco['happiness']}/100",
+            f"😊 Настроение полностью восстановлено!\n"
+            f"Текущее настроение: <b>{macaco['happiness']}/100</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=kb.main_menu_kb()
         )
@@ -556,6 +583,8 @@ async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     
     user_macaco = await db.get_or_create_macaco(user_id)
+    # Применяем распад настроения
+    await db.apply_happiness_decay(user_macaco['id'])
     
     async with aiosqlite.connect(db.DB_NAME) as conn:
         cursor = await conn.execute('''
@@ -656,6 +685,9 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
         return
 
     user_macaco = await db.get_or_create_macaco(user_id)
+    await db.apply_happiness_decay(user_macaco['id'])
+    user_macaco = await db.get_or_create_macaco(user_id)
+    
     can_bet, msg = await db.can_make_bet(user_macaco['id'], bet_amount)
     if not can_bet:
         await callback.message.edit_text(
@@ -810,6 +842,12 @@ async def accept_fight_callback(callback: CallbackQuery):
 
     challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
     opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
+    
+    # Применяем распад настроения для обоих
+    await db.apply_happiness_decay(challenger_macaco['id'])
+    await db.apply_happiness_decay(opponent_macaco['id'])
+    challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
+    opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
 
     bet = challenge['bet']
 
@@ -853,8 +891,12 @@ async def accept_fight_callback(callback: CallbackQuery):
         parse_mode=ParseMode.HTML
     )
 
+    # Симуляция боя
     winner_id = random.choice([challenger_macaco['id'], opponent_macaco['id']])
     loser_id = opponent_macaco['id'] if winner_id == challenger_macaco['id'] else challenger_macaco['id']
+
+    # Проигравший теряет 20 настроения
+    await db.decrease_happiness(loser_id, 20)
 
     await db.update_weight_after_fight(winner_id, loser_id, bet)
     await db.record_fight(challenger_macaco['id'], opponent_macaco['id'], winner_id, bet)
@@ -870,11 +912,13 @@ async def accept_fight_callback(callback: CallbackQuery):
         loser_name = opponent_macaco['name']
         result_gif = 'win'
         result_text = f"🎉 <b>ПОБЕДА!</b> {winner_name} победил {loser_name} и забрал {bet} кг!"
+        loser_happiness = opponent_macaco['happiness']
     else:
         winner_name = opponent_macaco['name']
         loser_name = challenger_macaco['name']
         result_gif = 'lose'
-        result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {loser_name} проиграл {winner_name} и потерял {bet} кг."
+        result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {loser_name} проиграл {winner_name} и потерял {bet} кг.\n😊 Настроение: -20"
+        loser_happiness = challenger_macaco['happiness']
 
     # Гифка результата
     await send_gif(
@@ -891,6 +935,7 @@ async def accept_fight_callback(callback: CallbackQuery):
         f"🏋️ {challenger_macaco['name']}: {challenger_macaco['weight']} кг\n"
         f"🏋️ {opponent_macaco['name']}: {opponent_macaco['weight']} кг\n"
         f"📊 Победитель получает +{exp_gain} опыта\n"
+        f"😊 Настроение проигравшего: {loser_happiness}/100\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -980,16 +1025,19 @@ async def inline_mode(inline_query: InlineQuery):
     try:
         if query in ["", "info", "мой", "макака"]:
             macaco = await db.get_or_create_macaco(user_id)
+            await db.apply_happiness_decay(macaco['id'])
+            macaco = await db.get_or_create_macaco(user_id)
             result = InlineQueryResultArticle(
                 id="1",
                 title=f"🐒 {macaco['name']}",
-                description=f"Вес: {macaco['weight']} кг | Ур. {macaco['level']} | Опыт: {macaco['exp']}/100",
+                description=f"Вес: {macaco['weight']} кг | Ур. {macaco['level']} | 😊 {macaco['happiness']}/100",
                 input_message_content=InputTextMessageContent(
                     message_text=(
                         f"🐒 <b>{macaco['name']}</b>\n"
                         f"Вес: {macaco['weight']} кг\n"
                         f"Уровень: {macaco['level']}\n"
-                        f"Опыт: {macaco['exp']}/100"
+                        f"Опыт: {macaco['exp']}/100\n"
+                        f"😊 Настроение: {macaco['happiness']}/100"
                     ),
                     parse_mode=ParseMode.HTML
                 ),
