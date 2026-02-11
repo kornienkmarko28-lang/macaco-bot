@@ -86,7 +86,6 @@ async def show_my_macaco(user_id: int, source):
         if isinstance(source, CallbackQuery):
             await source.answer()
         
-        # Применяем снижение настроения от времени
         macaco = await db.get_or_create_macaco(user_id)
         await db.apply_happiness_decay(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
@@ -187,7 +186,6 @@ async def start_command(message: Message):
     }
     await db.get_or_create_user(user_data)
     macaco = await db.get_or_create_macaco(user.id)
-    # Применяем распад настроения при старте
     await db.apply_happiness_decay(macaco['id'])
     
     bot_username = (await bot.get_me()).username
@@ -388,11 +386,9 @@ async def feed_with_food_callback(callback: CallbackQuery):
     
     try:
         macaco = await db.get_or_create_macaco(user_id)
-        # Применяем распад настроения
         await db.apply_happiness_decay(macaco['id'])
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Проверяем, не расстроена ли макака (настроение 0)
         if macaco['happiness'] <= 0:
             await callback.message.edit_text(
                 "🥺 <b>Я расстроена…</b>\n"
@@ -429,7 +425,6 @@ async def feed_with_food_callback(callback: CallbackQuery):
         
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Отправка гифки
         gif_types = {1: 'banana', 2: 'meat', 3: 'cake', 4: 'salad'}
         gif_name = gif_types.get(food_id, 'banana')
         gif_sent = await send_gif(
@@ -534,14 +529,10 @@ async def walk_macaco_callback(callback: CallbackQuery):
     
     try:
         macaco = await db.get_or_create_macaco(user_id)
-        # Применяем распад настроения перед прогулкой
         await db.apply_happiness_decay(macaco['id'])
-        
-        # Прогулка: восстанавливаем настроение до 100
         await db.set_happiness(macaco['id'], 100)
         macaco = await db.get_or_create_macaco(user_id)
         
-        # Гифка прогулки
         gif_sent = await send_gif(
             callback.message.chat.id,
             'walk',
@@ -583,7 +574,6 @@ async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     
     user_macaco = await db.get_or_create_macaco(user_id)
-    # Применяем распад настроения
     await db.apply_happiness_decay(user_macaco['id'])
     
     async with aiosqlite.connect(db.DB_NAME) as conn:
@@ -725,7 +715,6 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    # Проверяем, может ли бот отправить сообщение сопернику
     try:
         await bot.send_chat_action(opponent_user_id, action="typing")
     except Exception:
@@ -843,7 +832,6 @@ async def accept_fight_callback(callback: CallbackQuery):
     challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
     opponent_macaco = await db.get_or_create_macaco(opponent_user_id)
     
-    # Применяем распад настроения для обоих
     await db.apply_happiness_decay(challenger_macaco['id'])
     await db.apply_happiness_decay(opponent_macaco['id'])
     challenger_macaco = await db.get_or_create_macaco(challenge['challenger_id'])
@@ -883,7 +871,7 @@ async def accept_fight_callback(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # Гифка начала боя
+    # Отправляем гифку начала боя (только её)
     await send_gif(
         callback.message.chat.id,
         'fight',
@@ -910,23 +898,13 @@ async def accept_fight_callback(callback: CallbackQuery):
     if winner_id == challenger_macaco['id']:
         winner_name = challenger_macaco['name']
         loser_name = opponent_macaco['name']
-        result_gif = 'win'
         result_text = f"🎉 <b>ПОБЕДА!</b> {winner_name} победил {loser_name} и забрал {bet} кг!"
         loser_happiness = opponent_macaco['happiness']
     else:
         winner_name = opponent_macaco['name']
         loser_name = challenger_macaco['name']
-        result_gif = 'lose'
         result_text = f"😔 <b>ПОРАЖЕНИЕ</b> {loser_name} проиграл {winner_name} и потерял {bet} кг.\n😊 Настроение: -20"
         loser_happiness = challenger_macaco['happiness']
-
-    # Гифка результата
-    await send_gif(
-        callback.message.chat.id,
-        'fight',
-        result_gif,
-        parse_mode=ParseMode.HTML
-    )
 
     result_msg = (
         f"{'🎉' if winner_id == challenger_macaco['id'] else '😔'} <b>БОЙ ЗАВЕРШЁН!</b>\n"
