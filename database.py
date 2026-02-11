@@ -1,14 +1,12 @@
-import sqlite3
 import aiosqlite
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 import random
 import asyncio
 from typing import Dict, List, Tuple, Optional
 
-# Путь к файлу базы данных
 DB_NAME = 'macaco_bot.db'
 
-# Создание всех таблиц
+# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ==========
 async def create_tables():
     async with aiosqlite.connect(DB_NAME) as db:
         # Пользователи
@@ -21,7 +19,6 @@ async def create_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
         # Макаки
         await db.execute('''
             CREATE TABLE IF NOT EXISTS macacos (
@@ -39,7 +36,6 @@ async def create_tables():
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
-        
         # Бои
         await db.execute('''
             CREATE TABLE IF NOT EXISTS fights (
@@ -54,8 +50,7 @@ async def create_tables():
                 FOREIGN KEY (winner_id) REFERENCES macacos (macaco_id)
             )
         ''')
-        
-        # Еда (новое)
+        # Еда
         await db.execute('''
             CREATE TABLE IF NOT EXISTS food_types (
                 food_id INTEGER PRIMARY KEY,
@@ -66,8 +61,6 @@ async def create_tables():
                 cooldown_hours INTEGER NOT NULL
             )
         ''')
-        
-        # Заполняем типы еды
         await db.execute('''
             INSERT OR IGNORE INTO food_types (food_id, name, weight_gain, happiness_gain, hunger_decrease, cooldown_hours)
             VALUES 
@@ -76,18 +69,16 @@ async def create_tables():
             (3, '🍰 Торт', 5, 20, 70, 12),
             (4, '🥗 Салат', 2, 15, 40, 6)
         ''')
-        
         await db.commit()
-        print("✅ Все таблицы созданы!")
+        print("✅ Таблицы созданы")
 
-# Регистрация пользователя
+# ========== ПОЛЬЗОВАТЕЛИ ==========
 async def get_or_create_user(user_data: Dict) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
         user = await db.execute_fetchall(
             'SELECT * FROM users WHERE user_id = ?',
             (user_data['id'],)
         )
-        
         if not user:
             await db.execute('''
                 INSERT INTO users (user_id, username, first_name, last_name)
@@ -95,30 +86,49 @@ async def get_or_create_user(user_data: Dict) -> bool:
             ''', (user_data['id'], user_data.get('username'), 
                   user_data.get('first_name'), user_data.get('last_name')))
             await db.commit()
-        
         return True
 
-# Создание/получение макаки
+# ========== МАКАКИ ==========
 async def get_or_create_macaco(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_NAME) as db:
         macaco = await db.execute_fetchall(
             'SELECT * FROM macacos WHERE user_id = ?',
             (user_id,)
         )
-        
         if not macaco:
+            now = datetime.now().isoformat()
             await db.execute('''
-                INSERT INTO macacos (user_id, last_fed, weight, last_daily)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, datetime.now().isoformat(), 10, 
-                  datetime.now().isoformat()))
+                INSERT INTO macacos (user_id, last_fed, last_daily, weight)
+                VALUES (?, ?, ?, 10)
+            ''', (user_id, now, now))
             await db.commit()
-            
             macaco = await db.execute_fetchall(
                 'SELECT * FROM macacos WHERE user_id = ?',
                 (user_id,)
             )
-        
+        # Берём самую свежую запись (максимальный id)
+        cursor = await db.execute('''
+            SELECT * FROM macacos 
+            WHERE user_id = ? 
+            ORDER BY macaco_id DESC 
+            LIMIT 1
+        ''', (user_id,))
+        row = await cursor.fetchone()
+        if row:
+            return {
+                'id': row[0],
+                'user_id': row[1],
+                'name': row[2],
+                'health': row[3],
+                'hunger': row[4],
+                'happiness': row[5],
+                'level': row[6],
+                'exp': row[7],
+                'weight': row[8],
+                'last_fed': row[9],
+                'last_daily': row[10]
+            }
+        # fallback
         return {
             'id': macaco[0][0],
             'user_id': macaco[0][1],
@@ -133,139 +143,104 @@ async def get_or_create_macaco(user_id: int) -> Dict:
             'last_daily': macaco[0][10]
         }
 
-# Проверка КД для еды
+# ========== КОРМЛЕНИЕ ==========
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
     async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем КД для выбранной еды
         cursor = await db.execute(
             'SELECT cooldown_hours FROM food_types WHERE food_id = ?',
             (food_id,)
         )
-        food_data = await cursor.fetchone()
-        
-        if not food_data:
-            return False, "Такой еды не существует"
-        
-        cooldown_hours = food_data[0]
-        
-        # Получаем время последнего кормления этой едой
-        cursor = await db.execute('''
-            SELECT last_fed FROM macacos WHERE macaco_id = ?
-        ''', (macaco_id,))
-        
-        result = await cursor.fetchone()
-        
-        if not result or not result[0]:
+        food = await cursor.fetchone()
+        if not food:
+            return False, "Нет такой еды"
+        cooldown_hours = food[0]
+        cursor = await db.execute(
+            'SELECT last_fed FROM macacos WHERE macaco_id = ?',
+            (macaco_id,)
+        )
+        row = await cursor.fetchone()
+        if not row or not row[0]:
             return True, None
-        
-        last_fed = datetime.fromisoformat(result[0])
+        last_fed = datetime.fromisoformat(row[0])
         now = datetime.now()
-        cooldown = timedelta(hours=cooldown_hours)
-        time_left = (last_fed + cooldown) - now
-        
-        if time_left.total_seconds() > 0:
-            hours = int(time_left.seconds // 3600)
-            minutes = int((time_left.seconds % 3600) // 60)
-            return False, f"{hours}ч {minutes}м"
-        
-        return True, None
+        if (now - last_fed).total_seconds() > cooldown_hours * 3600:
+            return True, None
+        diff = last_fed + timedelta(hours=cooldown_hours) - now
+        hours = int(diff.seconds // 3600)
+        minutes = int((diff.seconds % 3600) // 60)
+        return False, f"{hours}ч {minutes}м"
 
-# Получение информации о еде
 async def get_food_info(food_id: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             'SELECT * FROM food_types WHERE food_id = ?',
             (food_id,)
         )
-        food = await cursor.fetchone()
-        
-        if food:
+        row = await cursor.fetchone()
+        if row:
             return {
-                'id': food[0],
-                'name': food[1],
-                'weight_gain': food[2],
-                'happiness_gain': food[3],
-                'hunger_decrease': food[4],
-                'cooldown_hours': food[5]
+                'id': row[0],
+                'name': row[1],
+                'weight_gain': row[2],
+                'happiness_gain': row[3],
+                'hunger_decrease': row[4],
+                'cooldown_hours': row[5]
             }
         return None
 
-# Кормление макаки выбранной едой
-async def feed_macaco_with_food(macaco_id: int, food_id: int):
+async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
+    food = await get_food_info(food_id)
+    if not food:
+        return False
     async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем данные еды
-        food_info = await get_food_info(food_id)
-        
-        if not food_info:
-            return False
-        
-        # Обновляем макаку
         await db.execute('''
             UPDATE macacos 
-            SET last_fed = ?, 
-                hunger = hunger - ?, 
-                happiness = happiness + ?,
+            SET last_fed = ?,
+                hunger = MAX(0, hunger - ?),
+                happiness = MIN(100, happiness + ?),
                 weight = weight + ?
             WHERE macaco_id = ?
-        ''', (datetime.now().isoformat(), 
-              food_info['hunger_decrease'],
-              food_info['happiness_gain'],
-              food_info['weight_gain'],
+        ''', (datetime.now().isoformat(),
+              food['hunger_decrease'],
+              food['happiness_gain'],
+              food['weight_gain'],
               macaco_id))
-        
         await db.commit()
         return True
 
-# Проверка ежедневной награды
+# ========== ЕЖЕДНЕВНАЯ НАГРАДА ==========
 async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             'SELECT last_daily FROM macacos WHERE macaco_id = ?',
             (macaco_id,)
         )
-        result = await cursor.fetchone()
-        
-        if not result or not result[0]:
+        row = await cursor.fetchone()
+        if not row or not row[0]:
             return True, None
-        
-        last_daily = datetime.fromisoformat(result[0])
-        now = datetime.now()
-        
-        # Проверяем, прошли ли сутки
-        if now.date() > last_daily.date():
+        last = datetime.fromisoformat(row[0]).date()
+        today = datetime.now().date()
+        if today > last:
             return True, None
-        else:
-            # Рассчитываем время до следующей награды
-            next_daily = (last_daily + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0
-            )
-            time_left = next_daily - now
-            
-            if time_left.total_seconds() > 0:
-                hours = int(time_left.seconds // 3600)
-                minutes = int((time_left.seconds % 3600) // 60)
-                return False, f"{hours}ч {minutes}м"
-            
-            return True, None
+        next_day = datetime.combine(last + timedelta(days=1), datetime.min.time())
+        diff = next_day - datetime.now()
+        hours = int(diff.seconds // 3600)
+        minutes = int((diff.seconds % 3600) // 60)
+        return False, f"{hours}ч {minutes}м"
 
-# Выдача ежедневной награды
 async def give_daily_reward(macaco_id: int) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
-        try:
-            await db.execute('''
-                UPDATE macacos 
-                SET weight = weight + 1,
-                    last_daily = ?,
-                    happiness = happiness + 5
-                WHERE macaco_id = ?
-            ''', (datetime.now().isoformat(), macaco_id))
-            
-            await db.commit()
-            return True
-        except:
-            return False
+        await db.execute('''
+            UPDATE macacos
+            SET weight = weight + 1,
+                last_daily = ?,
+                happiness = MIN(100, happiness + 5)
+            WHERE macaco_id = ?
+        ''', (datetime.now().isoformat(), macaco_id))
+        await db.commit()
+        return True
 
-# Поиск соперника
+# ========== БОИ ==========
 async def find_opponent(macaco_id: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute('''
@@ -274,47 +249,35 @@ async def find_opponent(macaco_id: int) -> Optional[Dict]:
             WHERE macaco_id != ? 
             ORDER BY RANDOM() LIMIT 1
         ''', (macaco_id,))
-        
-        opponent = await cursor.fetchone()
-        
-        if opponent:
+        row = await cursor.fetchone()
+        if row:
             return {
-                'id': opponent[0],
-                'name': opponent[1],
-                'level': opponent[2],
-                'weight': opponent[3]
+                'id': row[0],
+                'name': row[1],
+                'level': row[2],
+                'weight': row[3]
             }
         return None
 
-# Проверка ставки
 async def can_make_bet(macaco_id: int, bet_amount: int) -> Tuple[bool, str]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             'SELECT weight FROM macacos WHERE macaco_id = ?',
             (macaco_id,)
         )
-        result = await cursor.fetchone()
-        
-        if not result:
+        row = await cursor.fetchone()
+        if not row:
             return False, "Макака не найдена"
-        
-        current_weight = result[0]
-        
-        if current_weight < bet_amount:
-            return False, f"Недостаточно веса. У вас: {current_weight} кг"
-        
+        if row[0] < bet_amount:
+            return False, f"Недостаточно веса. У вас: {row[0]} кг"
         return True, "OK"
 
-# Обновление весов после боя
 async def update_weight_after_fight(winner_id: int, loser_id: int, bet_weight: int):
     async with aiosqlite.connect(DB_NAME) as db:
-        # Победителю
         await db.execute(
             'UPDATE macacos SET weight = weight + ? WHERE macaco_id = ?',
             (bet_weight, winner_id)
         )
-        
-        # Проигравшему
         await db.execute('''
             UPDATE macacos 
             SET weight = CASE 
@@ -323,10 +286,8 @@ async def update_weight_after_fight(winner_id: int, loser_id: int, bet_weight: i
             END 
             WHERE macaco_id = ?
         ''', (bet_weight, bet_weight, loser_id))
-        
         await db.commit()
 
-# Запись боя
 async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_weight: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('''
@@ -335,19 +296,27 @@ async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_w
         ''', (fighter1_id, fighter2_id, winner_id, bet_weight))
         await db.commit()
 
-# Топ игроков
+# ========== ТОП (ИСПРАВЛЕННЫЙ, БЕЗ ДУБЛИКАТОВ) ==========
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
+    """
+    Возвращает топ макак по весу – только по одной на пользователя (самую свежую)
+    """
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute('''
             SELECT m.name, m.weight, m.level, u.username 
             FROM macacos m
             LEFT JOIN users u ON m.user_id = u.user_id
+            INNER JOIN (
+                SELECT user_id, MAX(macaco_id) as last_id
+                FROM macacos
+                GROUP BY user_id
+            ) latest ON m.user_id = latest.user_id AND m.macaco_id = latest.last_id
             ORDER BY m.weight DESC, m.level DESC 
             LIMIT ?
         ''', (limit,))
         return await cursor.fetchall()
 
-# Поиск макак для инлайн-режима
+# ========== ПОИСК ДЛЯ ИНЛАЙН-РЕЖИМА ==========
 async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute('''
@@ -358,8 +327,7 @@ async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
             ORDER BY m.weight DESC
             LIMIT ?
         ''', (f'%{query}%', f'%{query}%', limit))
-        
-        results = await cursor.fetchall()
+        rows = await cursor.fetchall()
         return [
             {
                 'id': r[0],
@@ -368,8 +336,8 @@ async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
                 'level': r[3],
                 'username': r[4]
             }
-            for r in results
+            for r in rows
         ]
 
-# Инициализация БД
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 asyncio.run(create_tables())
