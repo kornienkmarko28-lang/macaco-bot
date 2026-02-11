@@ -700,6 +700,7 @@ async def main_menu_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "help_info")
 async def help_info_callback(callback: CallbackQuery):
+    await callback.answer()  # ← ВАЖНО!
     await help_command(callback.message)
 
 # ---------- ИНЛАЙН-РЕЖИМ ----------
