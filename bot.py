@@ -38,6 +38,9 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+BOT_USERNAME = None  # Сюда сохраним юзернейм бота после запуска
+
 class Rename(StatesGroup):
     waiting_for_name = State()
 
@@ -137,13 +140,12 @@ async def start_command(message: Message):
     await db.apply_happiness_decay(macaco['id'])
     await db.apply_hunger_decay(macaco['id'])
     await db.apply_health_decay(macaco['id'])
-    bot_username = (await bot.get_me()).username
     welcome_text = (
         "🎮 <b>Добро пожаловать в Боевые Макаки PRO!</b> 🐒\n\n"
         "<b>Что нового:</b>\n"
         "• 4 вида еды с разными эффектами\n"
         "• Ежедневная награда (+1 кг, +❤️, +😊)\n"
-        f"• Инлайн-режим — @{bot_username} команда\n"
+        f"• Инлайн-режим — @{BOT_USERNAME} команда\n"
         "• ✏️ /rename — дай имя макаке!\n"
         "• ⚔️ Вызов на бой с подтверждением\n"
         "• 😊 Настроение: падает со временем и при проигрыше\n"
@@ -156,8 +158,12 @@ async def start_command(message: Message):
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
-    bot_username = (await bot.get_me()).username
-    # Основной полный текст помощи
+    """Команда /help - использует глобальный BOT_USERNAME"""
+    global BOT_USERNAME
+    # Если по какой-то причине BOT_USERNAME не задан, используем заглушку
+    bot_username = BOT_USERNAME or "bot"
+    
+    # Основной текст помощи (уже проверен, не превышает лимит)
     help_text = (
         "📖 <b>ПОМОЩЬ ПО ИГРЕ — БОЕВЫЕ МАКАКИ PRO</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -206,28 +212,29 @@ async def help_command(message: Message):
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🐒 <b>Желаем весёлых боёв и вкусных бананов!</b>"
     )
-    # Сокращённый вариант (на случай превышения лимита)
-    short_help = (
-        "📖 <b>ПОМОЩЬ (кратко)</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "/start, /my, /rename, /top, /help\n"
-        "🍌 Еда: +вес, +❤️, +😊, -🍖, КД 5-12ч\n"
-        "🎁 Ежедневно: +1 кг, +5❤️, +5😊\n"
-        "🚶 Прогулка: 😊=100, +15❤️\n"
-        "⚔️ Бой: вызов → ставка → 60сек\n"
-        "   Победа: +25 опыта, +вес\n"
-        "   Поражение: +10 опыта, -вес, -20😊, -10❤️\n"
-        "📊 Здоровье ↓ при 🍖=0 и поражении\n"
-        "💬 Инлайн: @bot info/feed/fight/top\n"
-        "━━━━━━━━━━━━━━━━"
-    )
+    
     try:
         await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=kb.back_to_menu_kb())
     except TelegramEntityTooLarge:
+        # Если вдруг сообщение слишком длинное — отправляем краткую версию
+        short_help = (
+            "📖 <b>ПОМОЩЬ (кратко)</b>\n"
+            "━━━━━━━━━━━━━━━━\n"
+            "/start, /my, /rename, /top, /help\n"
+            "🍌 Еда: +вес, +❤️, +😊, -🍖, КД 5-12ч\n"
+            "🎁 Ежедневно: +1 кг, +5❤️, +5😊\n"
+            "🚶 Прогулка: 😊=100, +15❤️\n"
+            "⚔️ Бой: вызов → ставка → 60сек\n"
+            "   Победа: +25 опыта, +вес\n"
+            "   Поражение: +10 опыта, -вес, -20😊, -10❤️\n"
+            "📊 Здоровье ↓ при 🍖=0 и поражении\n"
+            f"💬 Инлайн: @{bot_username} info/feed/fight/top\n"
+            "━━━━━━━━━━━━━━━━"
+        )
         await message.answer(short_help, parse_mode=ParseMode.HTML, reply_markup=kb.back_to_menu_kb())
     except Exception as e:
-        logger.error(f"Ошибка в help_command: {e}")
-        await message.answer("❌ Не удалось загрузить справку.", reply_markup=kb.back_to_menu_kb())
+        logger.error(f"Ошибка в help_command: {e}", exc_info=True)
+        await message.answer("❌ Не удалось загрузить справку. Попробуйте позже.", reply_markup=kb.back_to_menu_kb())
 
 @dp.message(Command("my"))
 async def my_macaco_command(message: Message):
@@ -698,7 +705,7 @@ async def main_menu_callback(callback: CallbackQuery):
     await callback.message.edit_text("👇 <b>Главное меню:</b>", parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_kb())
     await callback.answer()
 
-# ========== ИСПРАВЛЕННАЯ КНОПКА ПОМОЩИ ==========
+# ---------- КНОПКА ПОМОЩИ (ИСПРАВЛЕНО) ----------
 @dp.callback_query(F.data == "help_info")
 async def help_info_callback(callback: CallbackQuery):
     await callback.answer()  # Сразу отвечаем, чтобы кнопка не зависла
@@ -782,10 +789,12 @@ async def inline_mode(inline_query: InlineQuery):
 
 # ---------- ЗАПУСК ----------
 async def main():
+    global BOT_USERNAME
     logger.info("🤖 Бот 'Боевые Макаки PRO' запускается...")
     try:
         bot_info = await bot.get_me()
-        logger.info(f"✅ Бот авторизован: @{bot_info.username}")
+        BOT_USERNAME = bot_info.username
+        logger.info(f"✅ Бот авторизован: @{BOT_USERNAME}")
         await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
