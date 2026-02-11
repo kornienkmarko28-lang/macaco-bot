@@ -1,7 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from typing import Optional
 
-# Главное меню
+# ========== ГЛАВНОЕ МЕНЮ ==========
 def main_menu_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🐒 Моя макака", callback_data="my_macaco")],
@@ -10,7 +9,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🎁 Ежедневная награда", callback_data="daily_reward")
         ],
         [
-            InlineKeyboardButton(text="⚔️ Найти бой", callback_data="find_fight"),
+            InlineKeyboardButton(text="⚔️ Вызвать на бой", callback_data="challenge_fight"),
             InlineKeyboardButton(text="🚶 Выгулять", callback_data="walk_macaco")
         ],
         [InlineKeyboardButton(text="🏆 Топ по весу", callback_data="top_weight")],
@@ -18,7 +17,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Выбор еды
+# ========== МЕНЮ ВЫБОРА ЕДЫ ==========
 def food_selection_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -33,7 +32,6 @@ def food_selection_kb() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Информация о еде
 def food_info_kb(food_id: int) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="✅ Покормить этой едой", callback_data=f"feed_{food_id}")],
@@ -41,47 +39,47 @@ def food_info_kb(food_id: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Выбор ставки для боя
-def bet_selection_kb(opponent_id: int) -> InlineKeyboardMarkup:
+# ========== МЕНЮ ВЫБОРА СТАВКИ ДЛЯ ВЫЗОВА ==========
+def bet_selection_challenge_kb(opponent_id: int) -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton(text="1 кг", callback_data=f"bet_1_{opponent_id}"),
-            InlineKeyboardButton(text="3 кг", callback_data=f"bet_3_{opponent_id}")
+            InlineKeyboardButton(text="1 кг", callback_data=f"challenge_bet_1"),
+            InlineKeyboardButton(text="3 кг", callback_data=f"challenge_bet_3")
         ],
         [
-            InlineKeyboardButton(text="5 кг", callback_data=f"bet_5_{opponent_id}"),
-            InlineKeyboardButton(text="10 кг", callback_data=f"bet_10_{opponent_id}")
+            InlineKeyboardButton(text="5 кг", callback_data=f"challenge_bet_5"),
+            InlineKeyboardButton(text="10 кг", callback_data=f"challenge_bet_10")
         ],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_fight")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Подтверждение боя
-def fight_confirmation_kb(opponent_id: int, bet_amount: int) -> InlineKeyboardMarkup:
+# ========== КНОПКИ ДЛЯ ОТВЕТА НА ВЫЗОВ ==========
+def challenge_response_kb(challenge_id: str, bet: int) -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton(text="✅ Начать бой", callback_data=f"start_fight_{opponent_id}_{bet_amount}"),
-            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_fight")
+            InlineKeyboardButton(text="🥊 Принять бой", callback_data=f"accept_fight_{challenge_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_fight_{challenge_id}")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# После боя
+# ========== ПОСЛЕ БОЯ ==========
 def after_fight_kb() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton(text="⚔️ Новый бой", callback_data="find_fight")],
+        [InlineKeyboardButton(text="⚔️ Новый бой", callback_data="challenge_fight")],
         [InlineKeyboardButton(text="⬅️ В меню", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Кнопка назад
+# ========== КНОПКА НАЗАД ==========
 def back_to_menu_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="⬅️ В меню", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Инлайн-кнопки для режима inline
+# ========== ИНЛАЙН-КНОПКИ ==========
 def inline_actions_kb(macaco_id: int) -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -89,7 +87,7 @@ def inline_actions_kb(macaco_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🍌 Кормить", callback_data=f"inline_feed_{macaco_id}")
         ],
         [
-            InlineKeyboardButton(text="⚔️ Вызвать на бой", callback_data=f"inline_fight_{macaco_id}"),
+            InlineKeyboardButton(text="⚔️ Вызвать на бой", callback_data="challenge_fight"),
             InlineKeyboardButton(text="🏆 Топ", callback_data="inline_top")
         ]
     ]
