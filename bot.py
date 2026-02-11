@@ -113,13 +113,13 @@ async def show_top_players(callback: CallbackQuery):
             text = "📊 Топ пуст! Будьте первым!"
             markup = kb.main_menu_kb()
         else:
-            lines = ["🏆 ТОП-5 МАКАК 🏆\n", "━━━━━━━━━━━━━━━━━━━━"]
+            lines = ["🏆 ТОП-5 МАКАК 🏆\n", "────────────────────"]
             medals = ["🥇", "🥈", "🥉", "4.", "5."]
             for idx, (name, weight, level, username) in enumerate(top[:5]):
                 medal = medals[idx]
                 user_display = f"@{username}" if username else "Без юзернейма"
                 lines.append(f"{medal} {name}\n   🏋️ {weight} кг | ⭐ Ур. {level}\n   👤 {user_display}\n")
-            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append("────────────────────")
             text = "\n".join(lines)
             markup = kb.back_to_menu_kb()
         await callback.message.edit_text(text, parse_mode=None, reply_markup=markup)
@@ -148,7 +148,7 @@ async def start_command(message: Message):
         "• ✏️ /rename — дай имя макаке!\n"
         "• ⚔️ Вызов на бой с подтверждением\n"
         "• 😊 Настроение: падает со временем и при проигрыше\n"
-        "• 🚶 Прогулка — восстанавливает настроение и здоровье\n"
+        "• 🚶 Прогулка — восстанавливает настроение до 100\n"
         "• 🍖 Сытость: падает каждые 2 часа, влияет на бой и здоровье\n"
         "• ❤️ Здоровье: падает при голоде и в боях\n\n"
         "👇 Выбери действие:"
@@ -157,59 +157,80 @@ async def start_command(message: Message):
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
+    """Красивая, понятная справка без HTML и псевдографики, отлично смотрится на телефоне."""
+    bot_username = BOT_USERNAME or "bot"
     help_text = (
-        "📖 ПОМОЩЬ ПО ИГРЕ — БОЕВЫЕ МАКАКИ PRO\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🐒 1. ОСНОВНЫЕ КОМАНДЫ\n"
-        "/start — начать игру (создать макаку)\n"
-        "/my — информация о твоей макаке\n"
-        "/rename — сменить имя макаке\n"
-        "/top — топ-5 самых тяжёлых макак\n"
-        "/help — эта справка\n\n"
-        "🍌 2. ЕДА И КОРМЛЕНИЕ\n"
-        "┌─────────────────────────────────────┐\n"
-        "│ 🍌 Банан   │ +1 кг │ +10 😊 │ -30 🍖 │ +10 ❤️ │ КД 5ч │\n"
-        "│ 🥩 Мясо    │ +3 кг │  +5 😊 │ -50 🍖 │ +15 ❤️ │ КД 8ч │\n"
-        "│ 🍰 Торт    │ +5 кг │ +20 😊 │ -70 🍖 │  +5 ❤️ │ КД12ч │\n"
-        "│ 🥗 Салат   │ +2 кг │ +15 😊 │ -40 🍖 │ +12 ❤️ │ КД 6ч │\n"
-        "└─────────────────────────────────────┘\n"
-        "При сытости = 0 макака теряет здоровье.\n"
-        "При настроении = 0 макака отказывается есть.\n\n"
-        "🎁 3. ЕЖЕДНЕВНАЯ НАГРАДА\n"
-        "+1 кг веса, +5 😊, +5 ❤️. Доступна раз в сутки.\n\n"
-        "🚶 4. ПРОГУЛКА\n"
-        "Настроение = 100, +15 ❤️.\n\n"
-        "⚔️ 5. БОЕВАЯ СИСТЕМА\n"
-        "Вызов: «Вызвать на бой» → соперник → ставка.\n"
-        "Принятие: 60 сек на ответ.\n"
-        "Условия: ❤️ > 0, 🍖 < 70, вес ≥ ставки.\n"
-        "Результат:\n"
-        "  - Победитель: +25 опыта, забирает вес ставки.\n"
-        "  - Проигравший: +10 опыта, теряет вес, -20 😊, -10 ❤️.\n\n"
-        "📊 6. ХАРАКТЕРИСТИКИ\n"
-        "┌─────────────────────────────────────┐\n"
-        "│ 🏋️ Вес      │ еда/победа ↑, поражение ↓  │\n"
-        "│ ⭐ Уровень  │ 100 опыта = +1 уровень    │\n"
-        "│ 📊 Опыт    │ +25 победа, +10 поражение │\n"
-        "│ ❤️ Здоровье│ голод (-5/ч), поражение (-10)│\n"
-        "│            │ еда/прогулка/ежедневка +  │\n"
-        "│ 🍖 Сытость │ падает: каждые 2ч (-5)   │\n"
-        "│ 😊 Настрое-│ время (-10/ч), поражение (-20)│\n"
-        "│    ние     │ еда/прогулка/ежедневка + │\n"
-        "└─────────────────────────────────────┘\n\n"
-        "💬 7. ИНЛАЙН-РЕЖИМ\n"
-        f"В любом чате: @{BOT_USERNAME} info — информация о макаке\n"
-        f"@{BOT_USERNAME} feed — меню кормления\n"
-        f"@{BOT_USERNAME} fight — список соперников\n"
-        f"@{BOT_USERNAME} top — топ игроков\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📖 *ПОМОЩЬ: БОЕВЫЕ МАКАКИ PRO*\n"
+        "═══════════════════════════════\n\n"
+        
+        "🔹 **ОСНОВНЫЕ КОМАНДЫ**\n"
+        "/start – начать игру / создать макаку\n"
+        "/my    – информация о твоей макаке\n"
+        "/rename– сменить имя макаке\n"
+        "/top   – топ‑5 самых тяжёлых макак\n"
+        "/help  – эта справка\n\n"
+        
+        "🔹 **ЕДА**\n"
+        "🍌 Банан     +1 кг   +10😊  -30🍖  +10❤️  КД 5ч\n"
+        "🥩 Мясо      +3 кг   +5😊   -50🍖  +15❤️  КД 8ч\n"
+        "🍰 Торт      +5 кг   +20😊  -70🍖  +5❤️   КД12ч\n"
+        "🥗 Салат     +2 кг   +15😊  -40🍖  +12❤️  КД 6ч\n"
+        "   ❗ При сытости = 0 макака теряет здоровье.\n"
+        "   ❗ При настроении = 0 отказывается есть.\n\n"
+        
+        "🔹 **ЕЖЕДНЕВНАЯ НАГРАДА** 🎁\n"
+        "   +1 кг, +5❤️, +5😊. Доступна раз в сутки.\n\n"
+        
+        "🔹 **ПРОГУЛКА** 🚶\n"
+        "   • Настроение восстанавливается до 100.\n"
+        "   • Здоровье не изменяется.\n\n"
+        
+        "🔹 **БОЕВАЯ СИСТЕМА** ⚔️\n"
+        "   • Вызов: «Вызвать на бой» → соперник → ставка (1,3,5,10 кг).\n"
+        "   • Принятие: у соперника 60 сек на ответ.\n"
+        "   • Условия: ❤️ > 0, 🍖 < 70, вес ≥ ставки у обоих.\n"
+        "   • Результат:\n"
+        "     ✅ Победитель: +25 опыта, забирает вес ставки.\n"
+        "     ❌ Проигравший: +10 опыта, теряет вес, -20😊, -10❤️.\n\n"
+        
+        "🔹 **ХАРАКТЕРИСТИКИ МАКАКИ**\n"
+        "   🏋️ Вес       — растёт от еды и побед, падает от поражений.\n"
+        "   ⭐ Уровень   — 100 опыта = +1 уровень.\n"
+        "   📊 Опыт     — победа +25, поражение +10.\n"
+        "   ❤️ Здоровье — падает: голод (-5/ч), поражение (-10);\n"
+        "                 растёт: еда, ежедневная награда.\n"
+        "   🍖 Сытость  — падает: каждые 2 ч (-5); растёт: еда.\n"
+        "   😊 Настроение — падает: время (-10/ч), поражение (-20);\n"
+        "                   растёт: еда, прогулка (до 100), ежедневка.\n\n"
+        
+        "🔹 **ИНЛАЙН-РЕЖИМ** 💬\n"
+        f"   В любом чате напишите @{bot_username} и команду:\n"
+        f"   • info  — информация о вашей макаке\n"
+        f"   • feed  — меню кормления\n"
+        f"   • fight — список соперников\n"
+        f"   • top   — топ игроков\n\n"
+        
+        "═══════════════════════════════\n"
         "🐒 Желаем весёлых боёв и вкусных бананов!"
     )
     try:
         await message.answer(help_text, parse_mode=None, reply_markup=kb.back_to_menu_kb())
     except Exception as e:
         logger.error(f"Ошибка в help_command: {e}", exc_info=True)
-        await message.answer("❌ Не удалось загрузить справку. Попробуйте позже.", reply_markup=kb.back_to_menu_kb())
+        # Короткая версия на случай ошибки
+        short = (
+            "📖 ПОМОЩЬ (кратко)\n"
+            "────────────────\n"
+            "/start, /my, /rename, /top, /help\n"
+            "🍌 Еда: +вес, +❤️, +😊, -🍖, КД 5-12ч\n"
+            "🎁 Ежедневно: +1 кг, +5❤️, +5😊\n"
+            "🚶 Прогулка: 😊=100\n"
+            "⚔️ Бой: вызов → ставка → 60сек\n"
+            "   ✅ +25 опыта, +вес\n"
+            "   ❌ +10 опыта, -вес, -20😊, -10❤️\n"
+            f"💬 Инлайн: @{bot_username} info/feed/fight/top"
+        )
+        await message.answer(short, parse_mode=None, reply_markup=kb.back_to_menu_kb())
 
 @dp.message(Command("my"))
 async def my_macaco_command(message: Message):
@@ -223,13 +244,13 @@ async def top_command(message: Message):
             text = "📊 Топ пуст! Будьте первым!"
             markup = kb.main_menu_kb()
         else:
-            lines = ["🏆 ТОП-5 МАКАК 🏆\n", "━━━━━━━━━━━━━━━━━━━━"]
+            lines = ["🏆 ТОП-5 МАКАК 🏆\n", "────────────────────"]
             medals = ["🥇", "🥈", "🥉", "4.", "5."]
             for idx, (name, weight, level, username) in enumerate(top[:5]):
                 medal = medals[idx]
                 user_display = f"@{username}" if username else "Без юзернейма"
                 lines.append(f"{medal} {name}\n   🏋️ {weight} кг | ⭐ Ур. {level}\n   👤 {user_display}\n")
-            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append("────────────────────")
             text = "\n".join(lines)
             markup = kb.back_to_menu_kb()
         await message.answer(text, parse_mode=None, reply_markup=markup)
@@ -293,13 +314,13 @@ async def food_info_callback(callback: CallbackQuery):
         return
     text = (
         f"{food['name']}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"────────────────────\n"
         f"🏋️ +{food['weight_gain']} кг\n"
         f"😊 +{food['happiness_gain']}\n"
         f"🍖 -{food['hunger_decrease']}\n"
         f"❤️ +{food['health_gain']}\n"
         f"⏳ КД {food['cooldown_hours']} ч\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"────────────────────\n"
         f"Покормить этой едой?"
     )
     await callback.message.edit_text(text, parse_mode=None, reply_markup=kb.food_info_kb(food_id))
@@ -407,13 +428,13 @@ async def walk_macaco_callback(callback: CallbackQuery):
         await db.apply_happiness_decay(macaco['id'])
         await db.apply_hunger_decay(macaco['id'])
         await db.apply_health_decay(macaco['id'])
-        await db.walk_macaco(macaco['id'])
+        await db.walk_macaco(macaco['id'])  # теперь только happiness = 100
         macaco = await db.get_or_create_macaco(user_id)
         await send_gif(callback.message.chat.id, 'walk', 'walking', parse_mode=None)
         await callback.message.edit_text(
             f"🚶 Прогулка успешна!\n\n"
             f"😊 Настроение полностью восстановлено (100)\n"
-            f"❤️ Здоровье +15 (теперь {macaco['health']}/100)",
+            f"❤️ Здоровье осталось без изменений: {macaco['health']}/100",
             parse_mode=None,
             reply_markup=kb.main_menu_kb()
         )
@@ -426,6 +447,7 @@ async def walk_macaco_callback(callback: CallbackQuery):
 async def top_weight_callback(callback: CallbackQuery):
     await show_top_players(callback)
 
+# ---------- ВЫЗОВ НА БОЙ ----------
 @dp.callback_query(F.data == "challenge_fight")
 async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -469,8 +491,8 @@ async def select_opponent_callback(callback: CallbackQuery, state: FSMContext):
         return
     await state.update_data(challenge_opponent_id=opp_id, opponent_name=opp[0])
     await callback.message.edit_text(
-        f"⚔️ Вызов на бой\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"🥊 Соперник: {opp[0]}\n🏋️ Вес: {opp[1]} кг\n⭐ Уровень: {opp[2]}\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚔️ Вызов на бой\n────────────────────\n"
+        f"🥊 Соперник: {opp[0]}\n🏋️ Вес: {opp[1]} кг\n⭐ Уровень: {opp[2]}\n────────────────────\n"
         f"👇 Выберите ставку:",
         parse_mode=None, reply_markup=kb.bet_selection_challenge_kb()
     )
@@ -632,13 +654,13 @@ async def accept_fight_callback(callback: CallbackQuery):
         loser_hp = c_macaco['health']
     result_msg = (
         f"{'🎉' if winner_id == c_macaco['id'] else '😔'} БОЙ ЗАВЕРШЁН!\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n{result_text}\n\n"
+        f"────────────────────\n{result_text}\n\n"
         f"🏋️ {c_macaco['name']}: {c_macaco['weight']} кг\n"
         f"🏋️ {o_macaco['name']}: {o_macaco['weight']} кг\n"
         f"📊 Победитель +{exp_gain} опыта\n"
         f"😊 Настроение проигравшего: {loser_h}/100\n"
         f"❤️ Здоровье проигравшего: {loser_hp}/100\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+        f"────────────────────"
     )
     await callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None)
     try:
@@ -684,6 +706,7 @@ async def help_info_callback(callback: CallbackQuery):
     await callback.answer()
     await help_command(callback.message)
 
+# ---------- ИНЛАЙН-РЕЖИМ ----------
 @dp.inline_query()
 async def inline_mode(inline_query: InlineQuery):
     q = inline_query.query.lower().strip()
