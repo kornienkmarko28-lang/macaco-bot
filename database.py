@@ -1,26 +1,39 @@
-import aiosqlite
+import asyncpg
 from datetime import datetime, timedelta
+import os
 import random
 import asyncio
 from typing import Dict, List, Tuple, Optional
 
-DB_NAME = 'macaco_bot.db'
+# ========== ПОДКЛЮЧЕНИЕ К БАЗЕ ==========
+DATABASE_URL = os.getenv('DATABASE_URL')  # Берём из переменных окружения Bothost
 
+if not DATABASE_URL:
+    raise ValueError("❌ DATABASE_URL не задан! Добавьте его в переменные окружения Bothost.")
+
+async def get_connection():
+    """Возвращает подключение к базе данных."""
+    return await asyncpg.connect(DATABASE_URL)
+
+# ========== СОЗДАНИЕ ТАБЛИЦ ==========
 async def create_tables():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('''
+    conn = await get_connection()
+    try:
+        # Пользователи
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 last_name TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT NOW()
             )
         ''')
-        await db.execute('''
+        # Макаки
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS macacos (
-                macaco_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                macaco_id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id),
                 name TEXT DEFAULT 'Макака',
                 health INTEGER DEFAULT 100,
                 hunger INTEGER DEFAULT 0,
@@ -30,28 +43,25 @@ async def create_tables():
                 weight INTEGER DEFAULT 10,
                 last_fed TIMESTAMP,
                 last_daily TIMESTAMP,
-                last_happiness_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_hunger_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_health_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
+                last_happiness_decay TIMESTAMP,
+                last_hunger_decay TIMESTAMP,
+                last_health_decay TIMESTAMP
             )
         ''')
-        await db.execute('''
+        # Бои
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS fights (
-                fight_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fighter1_id INTEGER NOT NULL,
-                fighter2_id INTEGER NOT NULL,
-                winner_id INTEGER,
+                fight_id SERIAL PRIMARY KEY,
+                fighter1_id INTEGER NOT NULL REFERENCES macacos(macaco_id),
+                fighter2_id INTEGER NOT NULL REFERENCES macacos(macaco_id),
+                winner_id INTEGER REFERENCES macacos(macaco_id),
                 bet_weight INTEGER DEFAULT 1,
-                fight_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (fighter1_id) REFERENCES macacos (macaco_id),
-                FOREIGN KEY (fighter2_id) REFERENCES macacos (macaco_id),
-                FOREIGN KEY (winner_id) REFERENCES macacos (macaco_id)
+                fight_time TIMESTAMP DEFAULT NOW()
             )
         ''')
-        await db.execute('DROP TABLE IF EXISTS food_types')
-        await db.execute('''
-            CREATE TABLE food_types (
+        # Еда
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS food_types (
                 food_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 weight_gain INTEGER NOT NULL,
@@ -61,88 +71,72 @@ async def create_tables():
                 health_gain INTEGER DEFAULT 10
             )
         ''')
-        await db.execute('''
-            INSERT INTO food_types (food_id, name, weight_gain, happiness_gain, hunger_decrease, cooldown_hours, health_gain)
-            VALUES 
-            (1, '🍌 Банан', 1, 10, 30, 5, 10),
-            (2, '🥩 Мясо', 3, 5, 50, 8, 15),
-            (3, '🍰 Торт', 5, 20, 70, 12, 5),
-            (4, '🥗 Салат', 2, 15, 40, 6, 12)
-        ''')
-        await db.commit()
-        print("✅ Таблицы созданы/обновлены")
-        await add_missing_columns()
+        # Проверяем, есть ли записи в food_types
+        count = await conn.fetchval('SELECT COUNT(*) FROM food_types')
+        if count == 0:
+            await conn.execute('''
+                INSERT INTO food_types (food_id, name, weight_gain, happiness_gain, hunger_decrease, cooldown_hours, health_gain)
+                VALUES 
+                (1, '🍌 Банан', 1, 10, 30, 5, 10),
+                (2, '🥩 Мясо', 3, 5, 50, 8, 15),
+                (3, '🍰 Торт', 5, 20, 70, 12, 5),
+                (4, '🥗 Салат', 2, 15, 40, 6, 12)
+            ''')
+        print("✅ Таблицы созданы/проверены")
+    finally:
+        await conn.close()
 
-async def add_missing_columns():
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("PRAGMA table_info(macacos)")
-        columns = await cursor.fetchall()
-        column_names = [col[1] for col in columns]
-        if 'last_hunger_decay' not in column_names:
-            await db.execute('ALTER TABLE macacos ADD COLUMN last_hunger_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-        if 'last_health_decay' not in column_names:
-            await db.execute('ALTER TABLE macacos ADD COLUMN last_health_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-        await db.commit()
-
+# ========== ПОЛЬЗОВАТЕЛИ ==========
 async def get_or_create_user(user_data: Dict) -> bool:
-    async with aiosqlite.connect(DB_NAME) as db:
-        user = await db.execute_fetchall('SELECT * FROM users WHERE user_id = ?', (user_data['id'],))
+    conn = await get_connection()
+    try:
+        user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_data['id'])
         if not user:
-            await db.execute('''
+            await conn.execute('''
                 INSERT INTO users (user_id, username, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            ''', (user_data['id'], user_data.get('username'), user_data.get('first_name'), user_data.get('last_name')))
-            await db.commit()
+                VALUES ($1, $2, $3, $4)
+            ''', user_data['id'], user_data.get('username'), user_data.get('first_name'), user_data.get('last_name'))
         return True
+    finally:
+        await conn.close()
 
+# ========== МАКАКИ ==========
 async def get_or_create_macaco(user_id: int) -> Dict:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('''
+    conn = await get_connection()
+    try:
+        # Берём самую свежую макаку пользователя
+        row = await conn.fetchrow('''
             SELECT * FROM macacos 
-            WHERE user_id = ? 
+            WHERE user_id = $1 
             ORDER BY macaco_id DESC 
             LIMIT 1
-        ''', (user_id,))
-        row = await cursor.fetchone()
+        ''', user_id)
+        
         if not row:
             now = datetime.now().isoformat()
-            await db.execute('''
+            await conn.execute('''
                 INSERT INTO macacos (user_id, last_fed, last_daily, last_happiness_decay, last_hunger_decay, last_health_decay, weight)
-                VALUES (?, ?, ?, ?, ?, ?, 10)
-            ''', (user_id, now, now, now, now, now))
-            await db.commit()
-            cursor = await db.execute('''
+                VALUES ($1, $2, $3, $4, $5, $6, 10)
+            ''', user_id, now, now, now, now, now)
+            row = await conn.fetchrow('''
                 SELECT * FROM macacos 
-                WHERE user_id = ? 
+                WHERE user_id = $1 
                 ORDER BY macaco_id DESC 
                 LIMIT 1
-            ''', (user_id,))
-            row = await cursor.fetchone()
-        col_names = [description[0] for description in cursor.description]
-        return {
-            'id': row[col_names.index('macaco_id')],
-            'user_id': row[col_names.index('user_id')],
-            'name': row[col_names.index('name')],
-            'health': row[col_names.index('health')],
-            'hunger': row[col_names.index('hunger')],
-            'happiness': row[col_names.index('happiness')],
-            'level': row[col_names.index('level')],
-            'exp': row[col_names.index('experience')],
-            'weight': row[col_names.index('weight')],
-            'last_fed': row[col_names.index('last_fed')],
-            'last_daily': row[col_names.index('last_daily')],
-            'last_happiness_decay': row[col_names.index('last_happiness_decay')],
-            'last_hunger_decay': row[col_names.index('last_hunger_decay')],
-            'last_health_decay': row[col_names.index('last_health_decay')],
-        }
+            ''', user_id)
+        
+        return dict(row)
+    finally:
+        await conn.close()
 
+# ========== ГОЛОД ==========
 async def apply_hunger_decay(macaco_id: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('SELECT hunger, last_hunger_decay FROM macacos WHERE macaco_id = ?', (macaco_id,))
-        row = await cursor.fetchone()
+    conn = await get_connection()
+    try:
+        row = await conn.fetchrow('SELECT hunger, last_hunger_decay FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return 0
-        hunger, last_decay_str = row
+        hunger, last_decay_str = row['hunger'], row['last_hunger_decay']
         last_decay = datetime.fromisoformat(last_decay_str) if last_decay_str else datetime.now()
         now = datetime.now()
         delta = now - last_decay
@@ -151,18 +145,23 @@ async def apply_hunger_decay(macaco_id: int) -> int:
             hunger_increase = (hours_passed // 2) * 5
             hunger = min(100, hunger + hunger_increase)
             new_last_decay = last_decay + timedelta(hours=hours_passed // 2 * 2)
-            await db.execute('UPDATE macacos SET hunger = ?, last_hunger_decay = ? WHERE macaco_id = ?',
-                             (hunger, new_last_decay.isoformat(), macaco_id))
-            await db.commit()
+            await conn.execute('''
+                UPDATE macacos 
+                SET hunger = $1, last_hunger_decay = $2 
+                WHERE macaco_id = $3
+            ''', hunger, new_last_decay.isoformat(), macaco_id)
         return hunger
+    finally:
+        await conn.close()
 
+# ========== ЗДОРОВЬЕ ==========
 async def apply_health_decay(macaco_id: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('SELECT health, hunger, last_health_decay FROM macacos WHERE macaco_id = ?', (macaco_id,))
-        row = await cursor.fetchone()
+    conn = await get_connection()
+    try:
+        row = await conn.fetchrow('SELECT health, hunger, last_health_decay FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return 0
-        health, hunger, last_decay_str = row
+        health, hunger, last_decay_str = row['health'], row['hunger'], row['last_health_decay']
         if hunger < 100:
             return health
         last_decay = datetime.fromisoformat(last_decay_str) if last_decay_str else datetime.now()
@@ -172,59 +171,51 @@ async def apply_health_decay(macaco_id: int) -> int:
         if hours_passed > 0:
             health = max(0, health - hours_passed * 5)
             new_last_decay = last_decay + timedelta(hours=hours_passed)
-            await db.execute('UPDATE macacos SET health = ?, last_health_decay = ? WHERE macaco_id = ?',
-                             (health, new_last_decay.isoformat(), macaco_id))
-            await db.commit()
+            await conn.execute('''
+                UPDATE macacos 
+                SET health = $1, last_health_decay = $2 
+                WHERE macaco_id = $3
+            ''', health, new_last_decay.isoformat(), macaco_id)
         return health
+    finally:
+        await conn.close()
 
 async def decrease_health(macaco_id: int, amount: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('SELECT health FROM macacos WHERE macaco_id = ?', (macaco_id,))
-        row = await cursor.fetchone()
-        if not row:
+    conn = await get_connection()
+    try:
+        health = await conn.fetchval('SELECT health FROM macacos WHERE macaco_id = $1', macaco_id)
+        if health is None:
             return 0
-        new_health = max(0, row[0] - amount)
-        await db.execute('UPDATE macacos SET health = ? WHERE macaco_id = ?', (new_health, macaco_id))
-        await db.commit()
+        new_health = max(0, health - amount)
+        await conn.execute('UPDATE macacos SET health = $1 WHERE macaco_id = $2', new_health, macaco_id)
         return new_health
+    finally:
+        await conn.close()
 
 async def increase_health(macaco_id: int, amount: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('SELECT health FROM macacos WHERE macaco_id = ?', (macaco_id,))
-        row = await cursor.fetchone()
-        if not row:
+    conn = await get_connection()
+    try:
+        health = await conn.fetchval('SELECT health FROM macacos WHERE macaco_id = $1', macaco_id)
+        if health is None:
             return 0
-        new_health = min(100, row[0] + amount)
-        await db.execute('UPDATE macacos SET health = ? WHERE macaco_id = ?', (new_health, macaco_id))
-        await db.commit()
+        new_health = min(100, health + amount)
+        await conn.execute('UPDATE macacos SET health = $1 WHERE macaco_id = $2', new_health, macaco_id)
         return new_health
+    finally:
+        await conn.close()
 
-async def get_food_info(food_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('SELECT * FROM food_types WHERE food_id = ?', (food_id,))
-        row = await cursor.fetchone()
-        if row:
-            return {
-                'id': row[0],
-                'name': row[1],
-                'weight_gain': row[2],
-                'happiness_gain': row[3],
-                'hunger_decrease': row[4],
-                'cooldown_hours': row[5],
-                'health_gain': row[6]
-            }
-        return None
-
+# ========== КОРМЛЕНИЕ ==========
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        food = await (await db.execute('SELECT cooldown_hours FROM food_types WHERE food_id = ?', (food_id,))).fetchone()
+    conn = await get_connection()
+    try:
+        food = await conn.fetchrow('SELECT cooldown_hours FROM food_types WHERE food_id = $1', food_id)
         if not food:
             return False, "Нет такой еды"
-        cooldown_hours = food[0]
-        row = await (await db.execute('SELECT last_fed FROM macacos WHERE macaco_id = ?', (macaco_id,))).fetchone()
-        if not row or not row[0]:
+        cooldown_hours = food['cooldown_hours']
+        last_fed = await conn.fetchval('SELECT last_fed FROM macacos WHERE macaco_id = $1', macaco_id)
+        if not last_fed:
             return True, None
-        last_fed = datetime.fromisoformat(row[0])
+        last_fed = datetime.fromisoformat(last_fed)
         now = datetime.now()
         if (now - last_fed).total_seconds() > cooldown_hours * 3600:
             return True, None
@@ -232,35 +223,49 @@ async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[st
         hours = int(diff.seconds // 3600)
         minutes = int((diff.seconds % 3600) // 60)
         return False, f"{hours}ч {minutes}м"
+    finally:
+        await conn.close()
+
+async def get_food_info(food_id: int) -> Optional[Dict]:
+    conn = await get_connection()
+    try:
+        row = await conn.fetchrow('SELECT * FROM food_types WHERE food_id = $1', food_id)
+        return dict(row) if row else None
+    finally:
+        await conn.close()
 
 async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
     food = await get_food_info(food_id)
     if not food:
         return False
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('''
+    conn = await get_connection()
+    try:
+        await conn.execute('''
             UPDATE macacos 
-            SET last_fed = ?,
-                hunger = MAX(0, hunger - ?),
-                happiness = MIN(100, happiness + ?),
-                weight = weight + ?,
-                health = MIN(100, health + ?)
-            WHERE macaco_id = ?
-        ''', (datetime.now().isoformat(),
+            SET last_fed = $1,
+                hunger = GREATEST(0, hunger - $2),
+                happiness = LEAST(100, happiness + $3),
+                weight = weight + $4,
+                health = LEAST(100, health + $5)
+            WHERE macaco_id = $6
+        ''', datetime.now().isoformat(),
               food['hunger_decrease'],
               food['happiness_gain'],
               food['weight_gain'],
               food['health_gain'],
-              macaco_id))
-        await db.commit()
+              macaco_id)
         return True
+    finally:
+        await conn.close()
 
+# ========== ЕЖЕДНЕВНАЯ НАГРАДА ==========
 async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        row = await (await db.execute('SELECT last_daily FROM macacos WHERE macaco_id = ?', (macaco_id,))).fetchone()
-        if not row or not row[0]:
+    conn = await get_connection()
+    try:
+        last_daily = await conn.fetchval('SELECT last_daily FROM macacos WHERE macaco_id = $1', macaco_id)
+        if not last_daily:
             return True, None
-        last = datetime.fromisoformat(row[0]).date()
+        last = datetime.fromisoformat(last_daily).date()
         today = datetime.now().date()
         if today > last:
             return True, None
@@ -269,26 +274,32 @@ async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
         hours = int(diff.seconds // 3600)
         minutes = int((diff.seconds % 3600) // 60)
         return False, f"{hours}ч {minutes}м"
+    finally:
+        await conn.close()
 
 async def give_daily_reward(macaco_id: int) -> bool:
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('''
+    conn = await get_connection()
+    try:
+        await conn.execute('''
             UPDATE macacos
             SET weight = weight + 1,
-                last_daily = ?,
-                happiness = MIN(100, happiness + 5),
-                health = MIN(100, health + 5)
-            WHERE macaco_id = ?
-        ''', (datetime.now().isoformat(), macaco_id))
-        await db.commit()
+                last_daily = $1,
+                happiness = LEAST(100, happiness + 5),
+                health = LEAST(100, health + 5)
+            WHERE macaco_id = $2
+        ''', datetime.now().isoformat(), macaco_id)
         return True
+    finally:
+        await conn.close()
 
+# ========== НАСТРОЕНИЕ ==========
 async def apply_happiness_decay(macaco_id: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        row = await (await db.execute('SELECT happiness, last_happiness_decay FROM macacos WHERE macaco_id = ?', (macaco_id,))).fetchone()
+    conn = await get_connection()
+    try:
+        row = await conn.fetchrow('SELECT happiness, last_happiness_decay FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return 0
-        happiness, last_decay_str = row
+        happiness, last_decay_str = row['happiness'], row['last_happiness_decay']
         last_decay = datetime.fromisoformat(last_decay_str) if last_decay_str else datetime.now()
         now = datetime.now()
         delta = now - last_decay
@@ -296,83 +307,101 @@ async def apply_happiness_decay(macaco_id: int) -> int:
         if hours_passed > 0:
             happiness = max(0, happiness - hours_passed * 10)
             new_last_decay = last_decay + timedelta(hours=hours_passed)
-            await db.execute('UPDATE macacos SET happiness = ?, last_happiness_decay = ? WHERE macaco_id = ?',
-                             (happiness, new_last_decay.isoformat(), macaco_id))
-            await db.commit()
+            await conn.execute('''
+                UPDATE macacos 
+                SET happiness = $1, last_happiness_decay = $2 
+                WHERE macaco_id = $3
+            ''', happiness, new_last_decay.isoformat(), macaco_id)
         return happiness
+    finally:
+        await conn.close()
 
 async def decrease_happiness(macaco_id: int, amount: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        row = await (await db.execute('SELECT happiness FROM macacos WHERE macaco_id = ?', (macaco_id,))).fetchone()
-        if not row:
+    conn = await get_connection()
+    try:
+        happiness = await conn.fetchval('SELECT happiness FROM macacos WHERE macaco_id = $1', macaco_id)
+        if happiness is None:
             return 0
-        new_happiness = max(0, row[0] - amount)
-        await db.execute('UPDATE macacos SET happiness = ? WHERE macaco_id = ?', (new_happiness, macaco_id))
-        await db.commit()
+        new_happiness = max(0, happiness - amount)
+        await conn.execute('UPDATE macacos SET happiness = $1 WHERE macaco_id = $2', new_happiness, macaco_id)
         return new_happiness
+    finally:
+        await conn.close()
 
 async def set_happiness(macaco_id: int, value: int) -> int:
     value = max(0, min(100, value))
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('UPDATE macacos SET happiness = ? WHERE macaco_id = ?', (value, macaco_id))
-        await db.commit()
+    conn = await get_connection()
+    try:
+        await conn.execute('UPDATE macacos SET happiness = $1 WHERE macaco_id = $2', value, macaco_id)
         return value
+    finally:
+        await conn.close()
 
+# ========== ПРОГУЛКА ==========
 async def walk_macaco(macaco_id: int) -> int:
-    """Прогулка: восстанавливает настроение до 100. Здоровье не меняется."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('''
-            UPDATE macacos 
-            SET happiness = 100
-            WHERE macaco_id = ?
-        ''', (macaco_id,))
-        await db.commit()
+    conn = await get_connection()
+    try:
+        await conn.execute('UPDATE macacos SET happiness = 100 WHERE macaco_id = $1', macaco_id)
         return 100
+    finally:
+        await conn.close()
 
+# ========== БОИ ==========
 async def can_make_bet(macaco_id: int, bet_amount: int) -> Tuple[bool, str]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        row = await (await db.execute('SELECT weight FROM macacos WHERE macaco_id = ?', (macaco_id,))).fetchone()
-        if not row:
+    conn = await get_connection()
+    try:
+        weight = await conn.fetchval('SELECT weight FROM macacos WHERE macaco_id = $1', macaco_id)
+        if weight is None:
             return False, "Макака не найдена"
-        if row[0] < bet_amount:
-            return False, f"Недостаточно веса. У вас: {row[0]} кг"
+        if weight < bet_amount:
+            return False, f"Недостаточно веса. У вас: {weight} кг"
         return True, "OK"
+    finally:
+        await conn.close()
 
 async def update_weight_after_fight(winner_id: int, loser_id: int, bet_weight: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('UPDATE macacos SET weight = weight + ? WHERE macaco_id = ?', (bet_weight, winner_id))
-        await db.execute('''
+    conn = await get_connection()
+    try:
+        await conn.execute('UPDATE macacos SET weight = weight + $1 WHERE macaco_id = $2', bet_weight, winner_id)
+        await conn.execute('''
             UPDATE macacos 
-            SET weight = CASE 
-                WHEN (weight - ?) < 1 THEN 1 
-                ELSE (weight - ?) 
-            END 
-            WHERE macaco_id = ?
-        ''', (bet_weight, bet_weight, loser_id))
-        await db.commit()
+            SET weight = GREATEST(1, weight - $1)
+            WHERE macaco_id = $2
+        ''', bet_weight, loser_id)
+    finally:
+        await conn.close()
 
 async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_weight: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('INSERT INTO fights (fighter1_id, fighter2_id, winner_id, bet_weight) VALUES (?, ?, ?, ?)',
-                         (fighter1_id, fighter2_id, winner_id, bet_weight))
-        await db.commit()
+    conn = await get_connection()
+    try:
+        await conn.execute('''
+            INSERT INTO fights (fighter1_id, fighter2_id, winner_id, bet_weight)
+            VALUES ($1, $2, $3, $4)
+        ''', fighter1_id, fighter2_id, winner_id, bet_weight)
+    finally:
+        await conn.close()
 
+# ========== ОПЫТ ==========
 async def add_experience(macaco_id: int, amount: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        row = await (await db.execute('SELECT experience, level FROM macacos WHERE macaco_id = ?', (macaco_id,))).fetchone()
+    conn = await get_connection()
+    try:
+        row = await conn.fetchrow('SELECT experience, level FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return
-        exp, level = row
+        exp, level = row['experience'], row['level']
         exp += amount
         while exp >= 100:
             exp -= 100
             level += 1
-        await db.execute('UPDATE macacos SET experience = ?, level = ? WHERE macaco_id = ?', (exp, level, macaco_id))
-        await db.commit()
+        await conn.execute('UPDATE macacos SET experience = $1, level = $2 WHERE macaco_id = $3', exp, level, macaco_id)
+    finally:
+        await conn.close()
 
+# ========== ТОП ==========
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('''
+    conn = await get_connection()
+    try:
+        rows = await conn.fetch('''
             SELECT m.name, m.weight, m.level, u.username 
             FROM macacos m
             LEFT JOIN users u ON m.user_id = u.user_id
@@ -382,31 +411,27 @@ async def get_top_macacos(limit: int = 5) -> List[Tuple]:
                 GROUP BY user_id
             ) latest ON m.user_id = latest.user_id AND m.macaco_id = latest.last_id
             ORDER BY m.weight DESC, m.level DESC 
-            LIMIT ?
-        ''', (limit,))
-        return await cursor.fetchall()
+            LIMIT $1
+        ''', limit)
+        return [(r['name'], r['weight'], r['level'], r['username']) for r in rows]
+    finally:
+        await conn.close()
 
+# ========== ПОИСК ==========
 async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('''
+    conn = await get_connection()
+    try:
+        rows = await conn.fetch('''
             SELECT m.macaco_id, m.name, m.weight, m.level, u.username
             FROM macacos m
             LEFT JOIN users u ON m.user_id = u.user_id
-            WHERE m.name LIKE ? OR u.username LIKE ?
+            WHERE m.name ILIKE $1 OR u.username ILIKE $1
             ORDER BY m.weight DESC
-            LIMIT ?
-        ''', (f'%{query}%', f'%{query}%', limit))
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': r[0],
-                'name': r[1],
-                'weight': r[2],
-                'level': r[3],
-                'username': r[4]
-            }
-            for r in rows
-        ]
+            LIMIT $2
+        ''', f'%{query}%', limit)
+        return [dict(r) for r in rows]
+    finally:
+        await conn.close()
 
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 asyncio.run(create_tables())
-
