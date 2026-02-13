@@ -66,6 +66,10 @@ async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", par
 async def show_my_macaco(user_id: int, source):
     try:
         if isinstance(source, CallbackQuery):
+            # Если сообщение не существует – просто отвечаем на callback и выходим
+            if source.message is None:
+                await source.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+                return
             await source.answer()
         macaco = await db.get_or_create_macaco(user_id)
         await db.apply_happiness_decay(macaco['macaco_id'])
@@ -102,13 +106,17 @@ async def show_my_macaco(user_id: int, source):
         logger.error(f"Ошибка в show_my_macaco: {e}")
         error_text = "❌ Ошибка при получении данных макаки"
         if isinstance(source, CallbackQuery):
-            await source.message.edit_text(error_text)
+            if source.message:
+                await source.message.edit_text(error_text)
         else:
             await source.answer(error_text)
 
 # ---------- Топ игроков ----------
 async def show_top_players(callback: CallbackQuery):
     try:
+        if callback.message is None:
+            await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+            return
         top = await db.get_top_macacos(5)
         if not top:
             text = "📊 Топ пуст! Будьте первым!"
@@ -127,7 +135,8 @@ async def show_top_players(callback: CallbackQuery):
         await callback.answer()
     except Exception as e:
         logger.error(f"Ошибка топа: {e}")
-        await callback.message.edit_text("❌ Ошибка", reply_markup=kb.main_menu_kb())
+        if callback.message:
+            await callback.message.edit_text("❌ Ошибка", reply_markup=kb.main_menu_kb())
         await callback.answer()
 
 # ---------- КОМАНДЫ ----------
@@ -273,7 +282,6 @@ async def process_new_name(message: Message, state: FSMContext):
     if not all(c.isalnum() or c in ' _-' for c in new_name):
         await message.answer("❌ Недопустимые символы.")
         return
-    # Исправленный код: получаем соединение и закрываем в finally
     conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
     try:
         await conn.execute('UPDATE macacos SET name = $1 WHERE user_id = $2', new_name, user_id)
@@ -285,10 +293,16 @@ async def process_new_name(message: Message, state: FSMContext):
 # ---------- КНОПКИ ----------
 @dp.callback_query(F.data == "my_macaco")
 async def my_macaco_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     await show_my_macaco(callback.from_user.id, callback)
 
 @dp.callback_query(F.data == "select_food")
 async def select_food_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     text = (
         "🍽️ Выберите еду:\n\n"
         "🍌 Банан: +1 кг, КД 5ч, +10 😊, -30 🍖, +10 ❤️\n"
@@ -301,6 +315,9 @@ async def select_food_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("food_"))
 async def food_info_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     food_id = int(callback.data.split("_")[1])
     food = await db.get_food_info(food_id)
     if not food:
@@ -322,6 +339,9 @@ async def food_info_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("feed_"))
 async def feed_with_food_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     food_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
     try:
@@ -383,6 +403,9 @@ async def feed_with_food_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "daily_reward")
 async def daily_reward_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     user_id = callback.from_user.id
     try:
         macaco = await db.get_or_create_macaco(user_id)
@@ -425,6 +448,9 @@ async def daily_reward_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "walk_macaco")
 async def walk_macaco_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     user_id = callback.from_user.id
     try:
         macaco = await db.get_or_create_macaco(user_id)
@@ -450,10 +476,16 @@ async def walk_macaco_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "top_weight")
 async def top_weight_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     await show_top_players(callback)
 
 @dp.callback_query(F.data == "challenge_fight")
 async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     user_id = callback.from_user.id
     await callback.answer()
     user_macaco = await db.get_or_create_macaco(user_id)
@@ -492,6 +524,9 @@ async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("select_opp_"))
 async def select_opponent_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     opp_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
     await callback.answer()
@@ -513,6 +548,9 @@ async def select_opponent_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("challenge_bet_"))
 async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     parts = callback.data.split("_")
     if len(parts) != 3:
         await callback.answer("❌ Ошибка данных")
@@ -616,6 +654,9 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("accept_fight_"))
 async def accept_fight_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     parts = callback.data.split("_")
     if len(parts) != 3:
         await callback.answer("❌ Ошибка данных")
@@ -705,6 +746,9 @@ async def accept_fight_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("decline_fight_"))
 async def decline_fight_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     parts = callback.data.split("_")
     if len(parts) != 3:
         await callback.answer("❌ Ошибка")
@@ -726,18 +770,28 @@ async def decline_fight_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "cancel_fight")
 async def cancel_fight_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     await callback.message.edit_text("❌ Бой отменён", reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback: CallbackQuery):
+    if callback.message is None:
+        await callback.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
+        return
     await callback.message.edit_text("👇 Главное меню:", parse_mode=None, reply_markup=kb.main_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "help_info")
 async def help_info_callback(callback: CallbackQuery):
     await callback.answer()
-    await help_command(callback.message)
+    if callback.message is None:
+        # Если сообщение не существует, просто отправляем справку новым сообщением
+        await help_command(callback.message)
+    else:
+        await help_command(callback.message)
 
 # ---------- ИНЛАЙН-РЕЖИМ ----------
 @dp.inline_query()
