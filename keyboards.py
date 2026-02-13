@@ -74,17 +74,3 @@ def back_to_menu_kb(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ В меню", callback_data=f"main_menu:{user_id}")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def inline_actions_kb(macaco_id: int) -> InlineKeyboardMarkup:
-    # Для инлайн-режима владелец – тот, кто нажал, поэтому user_id не добавляем, обрабатываем отдельно
-    keyboard = [
-        [
-            InlineKeyboardButton(text="🐒 Инфо", callback_data=f"inline_info_{macaco_id}"),
-            InlineKeyboardButton(text="🍌 Кормить", callback_data=f"inline_feed_{macaco_id}")
-        ],
-        [
-            InlineKeyboardButton(text="⚔️ Вызвать на бой", callback_data="challenge_fight"),
-            InlineKeyboardButton(text="🏆 Топ", callback_data="inline_top")
-        ]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
