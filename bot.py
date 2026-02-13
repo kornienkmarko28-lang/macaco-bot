@@ -273,8 +273,12 @@ async def process_new_name(message: Message, state: FSMContext):
     if not all(c.isalnum() or c in ' _-' for c in new_name):
         await message.answer("❌ Недопустимые символы.")
         return
-    async with asyncpg.connect(os.getenv('DATABASE_URL')) as conn:
+    # Исправленный код: получаем соединение и закрываем в finally
+    conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+    try:
         await conn.execute('UPDATE macacos SET name = $1 WHERE user_id = $2', new_name, user_id)
+    finally:
+        await conn.close()
     await message.answer(f"✅ Имя изменено на {new_name}!", parse_mode=None, reply_markup=kb.main_menu_kb())
     await state.clear()
 
@@ -465,10 +469,13 @@ async def challenge_list_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("🍖 Слишком голоден для боя! Покорми макаку.", reply_markup=kb.main_menu_kb())
         return
 
-    async with asyncpg.connect(os.getenv('DATABASE_URL')) as conn:
+    conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+    try:
         opponents = await conn.fetch('''
             SELECT macaco_id, name, weight, level, user_id FROM macacos WHERE user_id != $1
         ''', user_id)
+    finally:
+        await conn.close()
 
     if not opponents:
         await callback.message.edit_text("😕 Нет соперников!", reply_markup=kb.main_menu_kb())
@@ -488,8 +495,11 @@ async def select_opponent_callback(callback: CallbackQuery, state: FSMContext):
     opp_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
     await callback.answer()
-    async with asyncpg.connect(os.getenv('DATABASE_URL')) as conn:
+    conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+    try:
         opp = await conn.fetchrow('SELECT name, weight, level FROM macacos WHERE macaco_id = $1', opp_id)
+    finally:
+        await conn.close()
     if not opp:
         await callback.message.edit_text("❌ Соперник недоступен", reply_markup=kb.main_menu_kb())
         return
@@ -529,8 +539,11 @@ async def challenge_bet_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    async with asyncpg.connect(os.getenv('DATABASE_URL')) as conn:
+    conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+    try:
         opp_data = await conn.fetchrow('SELECT name, weight, user_id FROM macacos WHERE macaco_id = $1', opp_id)
+    finally:
+        await conn.close()
     if not opp_data:
         await callback.message.edit_text("❌ Соперник недоступен", reply_markup=kb.main_menu_kb())
         await callback.answer()
