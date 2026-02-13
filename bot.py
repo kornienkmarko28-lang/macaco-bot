@@ -5,6 +5,7 @@ import random
 import asyncpg
 from datetime import datetime
 from dotenv import load_dotenv
+import html  # для экранирования имён в HTML
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
@@ -60,12 +61,13 @@ async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", par
         logger.warning(f"Гифка {gif_type}/{gif_name}: {e}")
     return False
 
-# ---------- Отправка главного меню (без HTML) ----------
+# ---------- Отправка главного меню (с жирным заголовком) ----------
 async def send_main_menu(chat_id: int, user_id: int):
     macaco = await db.get_macaco_with_decay(user_id)
+    safe_name = html.escape(macaco['name'])
 
     welcome_text = (
-        f"Меню макаки {macaco['name']} 🐒\n\n"
+        f"<b>Меню макаки {safe_name}</b> 🐒\n\n"
         f"Вес: {macaco['weight']} кг\n"
         f"Уровень: {macaco['level']}\n"
         f"Здоровье: {macaco['health']}/100\n"
@@ -74,7 +76,7 @@ async def send_main_menu(chat_id: int, user_id: int):
         "👇 Выбери действие:"
     )
     markup = kb.main_menu_kb(user_id)
-    await bot.send_message(chat_id, welcome_text, parse_mode=None, reply_markup=markup)
+    await bot.send_message(chat_id, welcome_text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 # ---------- Показать макаку (кнопка «Назад» ведёт в меню) ----------
 async def show_my_macaco(user_id: int, source):
@@ -298,7 +300,10 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         await show_my_macaco(current_user_id, callback)
 
     elif action == "select_food":
+        macaco = await db.get_or_create_macaco(current_user_id)
+        safe_name = html.escape(macaco['name'])
         text = (
+            f"<b>Меню макаки {safe_name}</b> 🐒\n\n"
             "🍽️ Выберите еду:\n\n"
             "🍌 Банан: +1 кг, КД 5ч, +30 🍖, +10 ❤️\n"
             "🥩 Мясо: +3 кг, КД 8ч, +50 🍖, +15 ❤️\n"
@@ -306,16 +311,19 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             "🥗 Салат: +2 кг, КД 6ч, +40 🍖, +12 ❤️"
         )
         markup = kb.food_selection_kb(current_user_id)
-        await callback.message.edit_text(text, parse_mode=None, reply_markup=markup)
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
         await callback.answer()
 
     elif action.startswith("food_"):
+        macaco = await db.get_or_create_macaco(current_user_id)
+        safe_name = html.escape(macaco['name'])
         food_id = int(action.split("_")[1])
         food = await db.get_food_info_cached(food_id)
         if not food:
             await callback.answer("❌ Еда не найдена")
             return
         text = (
+            f"<b>Меню макаки {safe_name}</b> 🐒\n\n"
             f"{food['name']}\n"
             f"────────────────────\n"
             f"🏋️ +{food['weight_gain']} кг\n"
@@ -326,7 +334,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             f"Покормить этой едой?"
         )
         markup = kb.food_info_kb(food_id, current_user_id)
-        await callback.message.edit_text(text, parse_mode=None, reply_markup=markup)
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
         await callback.answer()
 
     elif action.startswith("feed_"):
@@ -449,8 +457,6 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await db.walk_macaco(macaco['macaco_id'])
             macaco = await db.get_or_create_macaco(user_id)
 
-            # Гифка прогулки НЕ отправляется
-
             await callback.message.edit_text(
                 f"🚶 Прогулка успешна!\n\n"
                 f"😊 Настроение полностью восстановлено (100)\n"
@@ -488,7 +494,6 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await callback.answer()
             return
 
-        # Условие: сытость > 60 (т.е. 100 - hunger > 60)
         if 100 - user_macaco['hunger'] <= 60:
             await callback.message.edit_text("🍖 Слишком голоден для боя! Покорми макаку.", reply_markup=kb.main_menu_kb(user_id))
             await callback.answer()
@@ -505,6 +510,9 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await callback.answer()
             return
 
+        # Добавляем заголовок с именем макаки
+        safe_name = html.escape(user_macaco['name'])
+        header = f"<b>Меню макаки {safe_name}</b> 🐒\n\n"
         await state.update_data(opponents_list=opponents, challenger_id=user_id)
 
         btns = []
@@ -513,7 +521,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             btns.append([InlineKeyboardButton(text=f"{name} | 🏋️ {weight} кг | ⭐ {level}", callback_data=f"select_opp:{user_id}:{opp_id}")])
         btns.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"main_menu:{user_id}")])
         markup = InlineKeyboardMarkup(inline_keyboard=btns)
-        await callback.message.edit_text("🥊 Выберите соперника:", parse_mode=None, reply_markup=markup)
+        await callback.message.edit_text(header + "🥊 Выберите соперника:", parse_mode=ParseMode.HTML, reply_markup=markup)
         await callback.answer()
 
     elif action == "select_opp":
@@ -527,6 +535,8 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             return
 
         user_id = current_user_id
+        macaco = await db.get_or_create_macaco(user_id)
+        safe_name = html.escape(macaco['name'])
         pool = await db.get_pool()
         async with pool.acquire() as conn:
             opp = await conn.fetchrow('SELECT name, weight, level FROM macacos WHERE macaco_id = $1', opponent_id)
@@ -538,12 +548,13 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         await state.update_data(challenge_opponent_id=opponent_id, opponent_name=opp['name'])
 
         text = (
+            f"<b>Меню макаки {safe_name}</b> 🐒\n\n"
             f"⚔️ Вызов на бой\n────────────────────\n"
             f"🥊 Соперник: {opp['name']}\n🏋️ Вес: {opp['weight']} кг\n⭐ Уровень: {opp['level']}\n────────────────────\n"
             f"👇 Выберите ставку:"
         )
         markup = kb.bet_selection_challenge_kb(user_id, opponent_id)
-        await callback.message.edit_text(text, parse_mode=None, reply_markup=markup)
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
         await callback.answer()
 
     elif action.startswith("challenge_bet_"):
@@ -593,7 +604,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             f"🏋️ Вес: {user_macaco['weight']} кг\n"
             f"⭐ Уровень: {user_macaco['level']}\n"
             f"💰 Ставка: {bet_amount} кг\n\n"
-            f"У вас есть 120 секунд."  # Изменено с 60 на 120
+            f"У вас есть 120 секунд."
         )
         try:
             challenge_msg = await bot.send_message(opp_user_id, challenge_text, parse_mode=None,
@@ -605,7 +616,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             return
 
         async def timeout():
-            await asyncio.sleep(120)  # Изменено с 60 на 120
+            await asyncio.sleep(120)
             if cid in active_challenges:
                 del active_challenges[cid]
                 try:
@@ -720,12 +731,19 @@ async def accept_fight_callback(callback: CallbackQuery):
         f"────────────────────"
     )
 
-    # Отправляем результат обоим участникам (последовательно, без gather)
+    # Отправляем результат обоим участникам последовательно
     await callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None)
     try:
         await bot.send_message(chall['challenger_id'], result_msg, parse_mode=None)
     except Exception as e:
         logger.warning(f"Не удалось отправить результат инициатору боя: {e}")
+
+    # Отправляем результат в общий чат, если это был не личный чат
+    if chall['challenge_chat_id'] != chall['challenger_id'] and chall['challenge_chat_id'] != opp_user_id:
+        try:
+            await bot.send_message(chall['challenge_chat_id'], result_msg, parse_mode=None)
+        except Exception as e:
+            logger.warning(f"Не удалось отправить результат в общий чат: {e}")
 
     del active_challenges[cid]
     await callback.answer()
@@ -766,4 +784,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
