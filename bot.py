@@ -5,7 +5,7 @@ import random
 import asyncpg
 from datetime import datetime
 from dotenv import load_dotenv
-import html  # для экранирования имён в HTML
+import html
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
@@ -26,6 +26,8 @@ import config as cfg
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
+GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')  # ссылка на основную группу
+
 if not TOKEN:
     print("❌ ОШИБКА: Токен не найден!")
     exit(1)
@@ -49,7 +51,7 @@ class Challenge(StatesGroup):
 active_challenges = {}
 challenge_counter = 0
 
-# ---------- Отправка гифок (кроме прогулки) ----------
+# ---------- Отправка гифок ----------
 async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", parse_mode=None):
     try:
         gif_info = cfg.get_gif_info(gif_type, gif_name)
@@ -61,7 +63,7 @@ async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", par
         logger.warning(f"Гифка {gif_type}/{gif_name}: {e}")
     return False
 
-# ---------- Отправка главного меню (с жирным заголовком) ----------
+# ---------- Отправка главного меню ----------
 async def send_main_menu(chat_id: int, user_id: int):
     macaco = await db.get_macaco_with_decay(user_id)
     safe_name = html.escape(macaco['name'])
@@ -78,7 +80,7 @@ async def send_main_menu(chat_id: int, user_id: int):
     markup = kb.main_menu_kb(user_id)
     await bot.send_message(chat_id, welcome_text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
-# ---------- Показать макаку (кнопка «Назад» ведёт в меню) ----------
+# ---------- Показать макаку ----------
 async def show_my_macaco(user_id: int, source):
     try:
         if isinstance(source, CallbackQuery):
@@ -152,11 +154,28 @@ async def show_top_players(callback: CallbackQuery, user_id: int):
 
 # ---------- КОМАНДЫ ----------
 @dp.message(CommandStart())
-async def start_command(message: Message):
+async def start_command(message: Message, state: FSMContext):
     user = message.from_user
     user_data = {'id': user.id, 'username': user.username, 'first_name': user.first_name, 'last_name': user.last_name}
     await db.get_or_create_user(user_data)
-    await send_main_menu(message.chat.id, user.id)
+    macaco = await db.get_or_create_macaco(user.id)
+    # Применяем распад, чтобы показать актуальные данные
+    await db.apply_happiness_decay(macaco['macaco_id'])
+    await db.apply_hunger_decay(macaco['macaco_id'])
+    await db.apply_health_decay(macaco['macaco_id'])
+    macaco = await db.get_or_create_macaco(user.id)
+
+    # Если имя стандартное – предлагаем сменить
+    if macaco['name'] == 'Макака':
+        await message.answer(
+            "👋 Добро пожаловать в Боевые Макаки PRO!\n\n"
+            "У вашей макаки пока нет имени. Давайте её назовём!\n"
+            "✏️ Напишите имя (до 20 символов, можно использовать буквы, цифры, пробел, дефис и подчёркивание):",
+            parse_mode=None
+        )
+        await state.set_state(Rename.waiting_for_name)
+    else:
+        await send_main_menu(message.chat.id, user.id)
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
@@ -260,18 +279,32 @@ async def process_new_name(message: Message, state: FSMContext):
     new_name = message.text.strip()
     user_id = message.from_user.id
     if len(new_name) > 20:
-        await message.answer("❌ Слишком длинное! Максимум 20 символов.")
+        await message.answer("❌ Слишком длинное! Максимум 20 символов.\nПопробуйте ещё раз:")
         return
     if len(new_name) < 2:
-        await message.answer("❌ Слишком короткое! Минимум 2 символа.")
+        await message.answer("❌ Слишком короткое! Минимум 2 символа.\nПопробуйте ещё раз:")
         return
     if not all(c.isalnum() or c in ' _-' for c in new_name):
-        await message.answer("❌ Недопустимые символы.")
+        await message.answer("❌ Недопустимые символы.\nПопробуйте ещё раз:")
         return
+
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         await conn.execute('UPDATE macacos SET name = $1 WHERE user_id = $2', new_name, user_id)
-    await message.answer(f"✅ Имя изменено на {new_name}!", parse_mode=None, reply_markup=kb.main_menu_kb(user_id))
+
+    # Если есть ссылка на группу, отправляем приглашение (только при первом именовании – всегда сейчас)
+    if GROUP_INVITE_LINK:
+        await message.answer(
+            f"Отлично, теперь у твоей макаки есть имя {new_name}! 🐒\n"
+            f"Присоединяйся к нашей группе, чтобы сражаться с друзьями:",
+            parse_mode=None,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Перейти в группу", url=GROUP_INVITE_LINK)]
+            ])
+        )
+
+    # Показываем главное меню
+    await send_main_menu(message.chat.id, user_id)
     await state.clear()
 
 # ---------- Универсальный обработчик защищённых callback ----------
@@ -510,7 +543,6 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await callback.answer()
             return
 
-        # Добавляем заголовок с именем макаки
         safe_name = html.escape(user_macaco['name'])
         header = f"<b>Меню макаки {safe_name}</b> 🐒\n\n"
         await state.update_data(opponents_list=opponents, challenger_id=user_id)
@@ -679,7 +711,6 @@ async def accept_fight_callback(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # Условие: сытость > 60 у обоих
     c_sat = 100 - c_macaco['hunger']
     o_sat = 100 - o_macaco['hunger']
     if c_sat <= 60 or o_sat <= 60:
@@ -707,7 +738,6 @@ async def accept_fight_callback(callback: CallbackQuery):
     exp_gain = 25 if winner_id == c_macaco['macaco_id'] else 10
     await db.add_experience(winner_id, exp_gain)
 
-    # Получаем обновлённые данные после боя
     c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
     o_macaco = await db.get_or_create_macaco(opp_user_id)
 
@@ -731,14 +761,12 @@ async def accept_fight_callback(callback: CallbackQuery):
         f"────────────────────"
     )
 
-    # Отправляем результат обоим участникам последовательно
     await callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None)
     try:
         await bot.send_message(chall['challenger_id'], result_msg, parse_mode=None)
     except Exception as e:
         logger.warning(f"Не удалось отправить результат инициатору боя: {e}")
 
-    # Отправляем результат в общий чат, если это был не личный чат
     if chall['challenge_chat_id'] != chall['challenger_id'] and chall['challenge_chat_id'] != opp_user_id:
         try:
             await bot.send_message(chall['challenge_chat_id'], result_msg, parse_mode=None)
