@@ -846,7 +846,7 @@ async def main():
     global BOT_USERNAME
     logger.info("🤖 Бот 'Боевые Макаки PRO' запускается...")
     # Инициализируем пул БД при старте
-    await db.get_pool()
+    await db.init_db()
     try:
         bot_info = await bot.get_me()
         BOT_USERNAME = bot_info.username
@@ -858,3 +858,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
