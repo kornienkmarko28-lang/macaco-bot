@@ -5,16 +5,13 @@ import random
 import asyncio
 from typing import Dict, List, Tuple, Optional
 
-# ========== ПОДКЛЮЧЕНИЕ К БАЗЕ ==========
 DATABASE_URL = os.getenv('DATABASE_URL')
-
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL не задан! Добавьте его в переменные окружения Bothost.")
 
 async def get_connection():
     return await asyncpg.connect(DATABASE_URL)
 
-# ========== СОЗДАНИЕ ТАБЛИЦ ==========
 async def create_tables():
     conn = await get_connection()
     try:
@@ -80,7 +77,6 @@ async def create_tables():
     finally:
         await conn.close()
 
-# ========== ПОЛЬЗОВАТЕЛИ ==========
 async def get_or_create_user(user_data: Dict) -> bool:
     conn = await get_connection()
     try:
@@ -94,7 +90,6 @@ async def get_or_create_user(user_data: Dict) -> bool:
     finally:
         await conn.close()
 
-# ========== МАКАКИ ==========
 async def get_or_create_macaco(user_id: int) -> Dict:
     conn = await get_connection()
     try:
@@ -104,25 +99,26 @@ async def get_or_create_macaco(user_id: int) -> Dict:
             ORDER BY macaco_id DESC 
             LIMIT 1
         ''', user_id)
-        
+
         if not row:
             now = datetime.now()
+            # Важно: last_fed = None, чтобы у новой макаки не было КД
             await conn.execute('''
                 INSERT INTO macacos (user_id, last_fed, last_daily, last_happiness_decay, last_hunger_decay, last_health_decay, weight)
-                VALUES ($1, $2, $3, $4, $5, $6, 10)
-            ''', user_id, now, now, now, now, now)
+                VALUES ($1, NULL, $2, $3, $4, $5, 10)
+            ''', user_id, now, now, now, now)
             row = await conn.fetchrow('''
                 SELECT * FROM macacos 
                 WHERE user_id = $1 
                 ORDER BY macaco_id DESC 
                 LIMIT 1
             ''', user_id)
-        
+
         return dict(row)
     finally:
         await conn.close()
 
-# ========== ГОЛОД ==========
+# ---------- ГОЛОД ----------
 async def apply_hunger_decay(macaco_id: int) -> int:
     conn = await get_connection()
     try:
@@ -149,7 +145,7 @@ async def apply_hunger_decay(macaco_id: int) -> int:
     finally:
         await conn.close()
 
-# ========== ЗДОРОВЬЕ ==========
+# ---------- ЗДОРОВЬЕ ----------
 async def apply_health_decay(macaco_id: int) -> int:
     conn = await get_connection()
     try:
@@ -202,7 +198,7 @@ async def increase_health(macaco_id: int, amount: int) -> int:
     finally:
         await conn.close()
 
-# ========== КОРМЛЕНИЕ ==========
+# ---------- КОРМЛЕНИЕ ----------
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
     conn = await get_connection()
     try:
@@ -255,7 +251,7 @@ async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
     finally:
         await conn.close()
 
-# ========== ЕЖЕДНЕВНАЯ НАГРАДА ==========
+# ---------- ЕЖЕДНЕВНАЯ НАГРАДА ----------
 async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
     conn = await get_connection()
     try:
@@ -289,7 +285,7 @@ async def give_daily_reward(macaco_id: int) -> bool:
     finally:
         await conn.close()
 
-# ========== НАСТРОЕНИЕ ==========
+# ---------- НАСТРОЕНИЕ ----------
 async def apply_happiness_decay(macaco_id: int) -> int:
     conn = await get_connection()
     try:
@@ -336,7 +332,7 @@ async def set_happiness(macaco_id: int, value: int) -> int:
     finally:
         await conn.close()
 
-# ========== ПРОГУЛКА ==========
+# ---------- ПРОГУЛКА ----------
 async def walk_macaco(macaco_id: int) -> int:
     conn = await get_connection()
     try:
@@ -345,7 +341,7 @@ async def walk_macaco(macaco_id: int) -> int:
     finally:
         await conn.close()
 
-# ========== БОИ ==========
+# ---------- БОИ ----------
 async def can_make_bet(macaco_id: int, bet_amount: int) -> Tuple[bool, str]:
     conn = await get_connection()
     try:
@@ -380,7 +376,7 @@ async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_w
     finally:
         await conn.close()
 
-# ========== ОПЫТ ==========
+# ---------- ОПЫТ ----------
 async def add_experience(macaco_id: int, amount: int):
     conn = await get_connection()
     try:
@@ -397,7 +393,7 @@ async def add_experience(macaco_id: int, amount: int):
     finally:
         await conn.close()
 
-# ========== ТОП ==========
+# ---------- ТОП ----------
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
     conn = await get_connection()
     try:
@@ -417,7 +413,7 @@ async def get_top_macacos(limit: int = 5) -> List[Tuple]:
     finally:
         await conn.close()
 
-# ========== ПОИСК ==========
+# ---------- ПОИСК ----------
 async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
     conn = await get_connection()
     try:
