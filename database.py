@@ -9,12 +9,49 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL не задан! Добавьте его в переменные окружения Bothost.")
 
-async def get_connection():
-    return await asyncpg.connect(DATABASE_URL)
+# Глобальный пул соединений
+_pool = None
+# Кэш для food_types
+_food_cache = None
 
+async def init_pool():
+    """Инициализирует пул соединений (вызывается один раз при старте)"""
+    global _pool
+    _pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=5,
+        max_size=20,
+        command_timeout=60
+    )
+    print("✅ Пул соединений инициализирован")
+
+async def get_pool():
+    """Возвращает пул (инициализирует при необходимости)"""
+    global _pool
+    if _pool is None:
+        await init_pool()
+    return _pool
+
+async def load_food_cache():
+    """Загружает таблицу еды в кэш"""
+    global _food_cache
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch('SELECT * FROM food_types')
+        _food_cache = {row['food_id']: dict(row) for row in rows}
+    print(f"✅ Кэш еды загружен ({len(_food_cache)} записей)")
+
+async def get_food_info_cached(food_id: int) -> Optional[Dict]:
+    """Получить информацию о еде из кэша (если кэш пуст – загружает)"""
+    global _food_cache
+    if _food_cache is None:
+        await load_food_cache()
+    return _food_cache.get(food_id)
+
+# ---------- СОЗДАНИЕ ТАБЛИЦ ----------
 async def create_tables():
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -63,6 +100,7 @@ async def create_tables():
                 health_gain INTEGER DEFAULT 10
             )
         ''')
+        # Заполняем food_types, если пусто
         count = await conn.fetchval('SELECT COUNT(*) FROM food_types')
         if count == 0:
             await conn.execute('''
@@ -74,12 +112,13 @@ async def create_tables():
                 (4, '🥗 Салат', 2, 0, 40, 6, 12)
             ''')
         print("✅ Таблицы созданы/проверены")
-    finally:
-        await conn.close()
+    # Загружаем кэш еды
+    await load_food_cache()
 
+# ---------- ПОЛЬЗОВАТЕЛИ ----------
 async def get_or_create_user(user_data: Dict) -> bool:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_data['id'])
         if not user:
             await conn.execute('''
@@ -87,12 +126,11 @@ async def get_or_create_user(user_data: Dict) -> bool:
                 VALUES ($1, $2, $3, $4)
             ''', user_data['id'], user_data.get('username'), user_data.get('first_name'), user_data.get('last_name'))
         return True
-    finally:
-        await conn.close()
 
+# ---------- МАКАКИ ----------
 async def get_or_create_macaco(user_id: int) -> Dict:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         row = await conn.fetchrow('''
             SELECT * FROM macacos 
             WHERE user_id = $1 
@@ -114,14 +152,24 @@ async def get_or_create_macaco(user_id: int) -> Dict:
             ''', user_id)
 
         return dict(row)
-    finally:
-        await conn.close()
+
+async def get_macaco_with_decay(user_id: int) -> Dict:
+    """Получить макаку и сразу применить все распады (оптимизированный вариант)"""
+    macaco = await get_or_create_macaco(user_id)
+    # Применяем распады
+    await apply_happiness_decay(macaco['macaco_id'])
+    await apply_hunger_decay(macaco['macaco_id'])
+    await apply_health_decay(macaco['macaco_id'])
+    # Возвращаем обновлённую макаку
+    return await get_or_create_macaco(user_id)
 
 # ---------- ГОЛОД ----------
 async def apply_hunger_decay(macaco_id: int) -> int:
-    conn = await get_connection()
-    try:
-        row = await conn.fetchrow('SELECT hunger, last_hunger_decay FROM macacos WHERE macaco_id = $1', macaco_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow('''
+            SELECT hunger, last_hunger_decay FROM macacos WHERE macaco_id = $1
+        ''', macaco_id)
         if not row:
             return 0
         hunger = row['hunger']
@@ -141,14 +189,14 @@ async def apply_hunger_decay(macaco_id: int) -> int:
                 WHERE macaco_id = $3
             ''', hunger, new_last_decay, macaco_id)
         return hunger
-    finally:
-        await conn.close()
 
 # ---------- ЗДОРОВЬЕ ----------
 async def apply_health_decay(macaco_id: int) -> int:
-    conn = await get_connection()
-    try:
-        row = await conn.fetchrow('SELECT health, hunger, last_health_decay FROM macacos WHERE macaco_id = $1', macaco_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow('''
+            SELECT health, hunger, last_health_decay FROM macacos WHERE macaco_id = $1
+        ''', macaco_id)
         if not row:
             return 0
         health = row['health']
@@ -170,41 +218,35 @@ async def apply_health_decay(macaco_id: int) -> int:
                 WHERE macaco_id = $3
             ''', health, new_last_decay, macaco_id)
         return health
-    finally:
-        await conn.close()
 
 async def decrease_health(macaco_id: int, amount: int) -> int:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         health = await conn.fetchval('SELECT health FROM macacos WHERE macaco_id = $1', macaco_id)
         if health is None:
             return 0
         new_health = max(0, health - amount)
         await conn.execute('UPDATE macacos SET health = $1 WHERE macaco_id = $2', new_health, macaco_id)
         return new_health
-    finally:
-        await conn.close()
 
 async def increase_health(macaco_id: int, amount: int) -> int:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         health = await conn.fetchval('SELECT health FROM macacos WHERE macaco_id = $1', macaco_id)
         if health is None:
             return 0
         new_health = min(100, health + amount)
         await conn.execute('UPDATE macacos SET health = $1 WHERE macaco_id = $2', new_health, macaco_id)
         return new_health
-    finally:
-        await conn.close()
 
 # ---------- КОРМЛЕНИЕ ----------
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
-    conn = await get_connection()
-    try:
-        food = await conn.fetchrow('SELECT cooldown_hours FROM food_types WHERE food_id = $1', food_id)
-        if not food:
-            return False, "Нет такой еды"
-        cooldown_hours = food['cooldown_hours']
+    food = await get_food_info_cached(food_id)
+    if not food:
+        return False, "Нет такой еды"
+    cooldown_hours = food['cooldown_hours']
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         last_fed = await conn.fetchval('SELECT last_fed FROM macacos WHERE macaco_id = $1', macaco_id)
         if last_fed is None:
             return True, None
@@ -215,23 +257,13 @@ async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[st
         hours = int(diff.seconds // 3600)
         minutes = int((diff.seconds % 3600) // 60)
         return False, f"{hours}ч {minutes}м"
-    finally:
-        await conn.close()
-
-async def get_food_info(food_id: int) -> Optional[Dict]:
-    conn = await get_connection()
-    try:
-        row = await conn.fetchrow('SELECT * FROM food_types WHERE food_id = $1', food_id)
-        return dict(row) if row else None
-    finally:
-        await conn.close()
 
 async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
-    food = await get_food_info(food_id)
+    food = await get_food_info_cached(food_id)
     if not food:
         return False
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('''
             UPDATE macacos 
             SET last_fed = $1,
@@ -245,13 +277,11 @@ async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
               food['health_gain'],
               macaco_id)
         return True
-    finally:
-        await conn.close()
 
 # ---------- ЕЖЕДНЕВНАЯ НАГРАДА ----------
 async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         last_daily = await conn.fetchval('SELECT last_daily FROM macacos WHERE macaco_id = $1', macaco_id)
         if last_daily is None:
             return True, None
@@ -264,12 +294,10 @@ async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
         hours = int(diff.seconds // 3600)
         minutes = int((diff.seconds % 3600) // 60)
         return False, f"{hours}ч {minutes}м"
-    finally:
-        await conn.close()
 
 async def give_daily_reward(macaco_id: int) -> bool:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('''
             UPDATE macacos
             SET weight = weight + 1,
@@ -279,14 +307,14 @@ async def give_daily_reward(macaco_id: int) -> bool:
             WHERE macaco_id = $2
         ''', datetime.now(), macaco_id)
         return True
-    finally:
-        await conn.close()
 
 # ---------- НАСТРОЕНИЕ ----------
 async def apply_happiness_decay(macaco_id: int) -> int:
-    conn = await get_connection()
-    try:
-        row = await conn.fetchrow('SELECT happiness, last_happiness_decay FROM macacos WHERE macaco_id = $1', macaco_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow('''
+            SELECT happiness, last_happiness_decay FROM macacos WHERE macaco_id = $1
+        ''', macaco_id)
         if not row:
             return 0
         happiness = row['happiness']
@@ -305,78 +333,64 @@ async def apply_happiness_decay(macaco_id: int) -> int:
                 WHERE macaco_id = $3
             ''', happiness, new_last_decay, macaco_id)
         return happiness
-    finally:
-        await conn.close()
 
 async def decrease_happiness(macaco_id: int, amount: int) -> int:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         happiness = await conn.fetchval('SELECT happiness FROM macacos WHERE macaco_id = $1', macaco_id)
         if happiness is None:
             return 0
         new_happiness = max(0, happiness - amount)
         await conn.execute('UPDATE macacos SET happiness = $1 WHERE macaco_id = $2', new_happiness, macaco_id)
         return new_happiness
-    finally:
-        await conn.close()
 
 async def set_happiness(macaco_id: int, value: int) -> int:
     value = max(0, min(100, value))
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('UPDATE macacos SET happiness = $1 WHERE macaco_id = $2', value, macaco_id)
         return value
-    finally:
-        await conn.close()
 
 # ---------- ПРОГУЛКА ----------
 async def walk_macaco(macaco_id: int) -> int:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('UPDATE macacos SET happiness = 100 WHERE macaco_id = $1', macaco_id)
         return 100
-    finally:
-        await conn.close()
 
 # ---------- БОИ ----------
 async def can_make_bet(macaco_id: int, bet_amount: int) -> Tuple[bool, str]:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         weight = await conn.fetchval('SELECT weight FROM macacos WHERE macaco_id = $1', macaco_id)
         if weight is None:
             return False, "Макака не найдена"
         if weight < bet_amount:
             return False, f"Недостаточно веса. У вас: {weight} кг"
         return True, "OK"
-    finally:
-        await conn.close()
 
 async def update_weight_after_fight(winner_id: int, loser_id: int, bet_weight: int):
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('UPDATE macacos SET weight = weight + $1 WHERE macaco_id = $2', bet_weight, winner_id)
         await conn.execute('''
             UPDATE macacos 
             SET weight = GREATEST(1, weight - $1)
             WHERE macaco_id = $2
         ''', bet_weight, loser_id)
-    finally:
-        await conn.close()
 
 async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_weight: int):
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO fights (fighter1_id, fighter2_id, winner_id, bet_weight)
             VALUES ($1, $2, $3, $4)
         ''', fighter1_id, fighter2_id, winner_id, bet_weight)
-    finally:
-        await conn.close()
 
 # ---------- ОПЫТ ----------
 async def add_experience(macaco_id: int, amount: int):
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         row = await conn.fetchrow('SELECT experience, level FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return
@@ -387,13 +401,11 @@ async def add_experience(macaco_id: int, amount: int):
             exp -= 100
             level += 1
         await conn.execute('UPDATE macacos SET experience = $1, level = $2 WHERE macaco_id = $3', exp, level, macaco_id)
-    finally:
-        await conn.close()
 
 # ---------- ТОП ----------
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         rows = await conn.fetch('''
             SELECT m.name, m.weight, m.level, u.username 
             FROM macacos m
@@ -407,13 +419,11 @@ async def get_top_macacos(limit: int = 5) -> List[Tuple]:
             LIMIT $1
         ''', limit)
         return [(r['name'], r['weight'], r['level'], r['username']) for r in rows]
-    finally:
-        await conn.close()
 
 # ---------- ПОИСК ----------
 async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
-    conn = await get_connection()
-    try:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         rows = await conn.fetch('''
             SELECT m.macaco_id, m.name, m.weight, m.level, u.username
             FROM macacos m
@@ -423,8 +433,9 @@ async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
             LIMIT $2
         ''', f'%{query}%', limit)
         return [dict(r) for r in rows]
-    finally:
-        await conn.close()
 
-# ========== ИНИЦИАЛИЗАЦИЯ ==========
-asyncio.run(create_tables())
+# ---------- ИНИЦИАЛИЗАЦИЯ ----------
+async def init_db():
+    await create_tables()
+
+asyncio.run(init_db())
