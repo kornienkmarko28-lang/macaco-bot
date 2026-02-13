@@ -720,12 +720,12 @@ async def accept_fight_callback(callback: CallbackQuery):
         f"────────────────────"
     )
 
-    # Отправляем результат обоим участникам параллельно
-    await asyncio.gather(
-        callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None),
-        bot.send_message(chall['challenger_id'], result_msg, parse_mode=None),
-        return_exceptions=True
-    )
+    # Отправляем результат обоим участникам (последовательно, без gather)
+    await callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None)
+    try:
+        await bot.send_message(chall['challenger_id'], result_msg, parse_mode=None)
+    except Exception as e:
+        logger.warning(f"Не удалось отправить результат инициатору боя: {e}")
 
     del active_challenges[cid]
     await callback.answer()
@@ -766,3 +766,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
