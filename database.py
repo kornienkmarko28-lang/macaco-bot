@@ -1,7 +1,6 @@
 import asyncpg
 from datetime import datetime, timedelta
 import os
-import random
 import asyncio
 from typing import Dict, List, Tuple, Optional
 
@@ -9,31 +8,25 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL не задан! Добавьте его в переменные окружения Bothost.")
 
-# Глобальный пул соединений
 _pool = None
-# Кэш для food_types
+_pool_init_lock = asyncio.Lock()
 _food_cache = None
 
-async def init_pool():
-    """Инициализирует пул соединений (вызывается один раз при старте)"""
-    global _pool
-    _pool = await asyncpg.create_pool(
-        DATABASE_URL,
-        min_size=5,
-        max_size=20,
-        command_timeout=60
-    )
-    print("✅ Пул соединений инициализирован")
-
 async def get_pool():
-    """Возвращает пул (инициализирует при необходимости)"""
     global _pool
     if _pool is None:
-        await init_pool()
+        async with _pool_init_lock:
+            if _pool is None:
+                _pool = await asyncpg.create_pool(
+                    DATABASE_URL,
+                    min_size=5,
+                    max_size=20,
+                    command_timeout=60
+                )
+                print("✅ Пул соединений инициализирован")
     return _pool
 
 async def load_food_cache():
-    """Загружает таблицу еды в кэш"""
     global _food_cache
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -42,13 +35,11 @@ async def load_food_cache():
     print(f"✅ Кэш еды загружен ({len(_food_cache)} записей)")
 
 async def get_food_info_cached(food_id: int) -> Optional[Dict]:
-    """Получить информацию о еде из кэша (если кэш пуст – загружает)"""
     global _food_cache
     if _food_cache is None:
         await load_food_cache()
     return _food_cache.get(food_id)
 
-# ---------- СОЗДАНИЕ ТАБЛИЦ ----------
 async def create_tables():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -100,7 +91,6 @@ async def create_tables():
                 health_gain INTEGER DEFAULT 10
             )
         ''')
-        # Заполняем food_types, если пусто
         count = await conn.fetchval('SELECT COUNT(*) FROM food_types')
         if count == 0:
             await conn.execute('''
@@ -112,10 +102,8 @@ async def create_tables():
                 (4, '🥗 Салат', 2, 0, 40, 6, 12)
             ''')
         print("✅ Таблицы созданы/проверены")
-    # Загружаем кэш еды
     await load_food_cache()
 
-# ---------- ПОЛЬЗОВАТЕЛИ ----------
 async def get_or_create_user(user_data: Dict) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -127,7 +115,6 @@ async def get_or_create_user(user_data: Dict) -> bool:
             ''', user_data['id'], user_data.get('username'), user_data.get('first_name'), user_data.get('last_name'))
         return True
 
-# ---------- МАКАКИ ----------
 async def get_or_create_macaco(user_id: int) -> Dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -137,7 +124,6 @@ async def get_or_create_macaco(user_id: int) -> Dict:
             ORDER BY macaco_id DESC 
             LIMIT 1
         ''', user_id)
-
         if not row:
             now = datetime.now()
             await conn.execute('''
@@ -150,20 +136,15 @@ async def get_or_create_macaco(user_id: int) -> Dict:
                 ORDER BY macaco_id DESC 
                 LIMIT 1
             ''', user_id)
-
         return dict(row)
 
 async def get_macaco_with_decay(user_id: int) -> Dict:
-    """Получить макаку и сразу применить все распады (оптимизированный вариант)"""
     macaco = await get_or_create_macaco(user_id)
-    # Применяем распады
     await apply_happiness_decay(macaco['macaco_id'])
     await apply_hunger_decay(macaco['macaco_id'])
     await apply_health_decay(macaco['macaco_id'])
-    # Возвращаем обновлённую макаку
     return await get_or_create_macaco(user_id)
 
-# ---------- ГОЛОД ----------
 async def apply_hunger_decay(macaco_id: int) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -190,7 +171,6 @@ async def apply_hunger_decay(macaco_id: int) -> int:
             ''', hunger, new_last_decay, macaco_id)
         return hunger
 
-# ---------- ЗДОРОВЬЕ ----------
 async def apply_health_decay(macaco_id: int) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -239,7 +219,6 @@ async def increase_health(macaco_id: int, amount: int) -> int:
         await conn.execute('UPDATE macacos SET health = $1 WHERE macaco_id = $2', new_health, macaco_id)
         return new_health
 
-# ---------- КОРМЛЕНИЕ ----------
 async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[str]]:
     food = await get_food_info_cached(food_id)
     if not food:
@@ -278,7 +257,6 @@ async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
               macaco_id)
         return True
 
-# ---------- ЕЖЕДНЕВНАЯ НАГРАДА ----------
 async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -308,7 +286,6 @@ async def give_daily_reward(macaco_id: int) -> bool:
         ''', datetime.now(), macaco_id)
         return True
 
-# ---------- НАСТРОЕНИЕ ----------
 async def apply_happiness_decay(macaco_id: int) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -351,14 +328,12 @@ async def set_happiness(macaco_id: int, value: int) -> int:
         await conn.execute('UPDATE macacos SET happiness = $1 WHERE macaco_id = $2', value, macaco_id)
         return value
 
-# ---------- ПРОГУЛКА ----------
 async def walk_macaco(macaco_id: int) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute('UPDATE macacos SET happiness = 100 WHERE macaco_id = $1', macaco_id)
         return 100
 
-# ---------- БОИ ----------
 async def can_make_bet(macaco_id: int, bet_amount: int) -> Tuple[bool, str]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -387,7 +362,6 @@ async def record_fight(fighter1_id: int, fighter2_id: int, winner_id: int, bet_w
             VALUES ($1, $2, $3, $4)
         ''', fighter1_id, fighter2_id, winner_id, bet_weight)
 
-# ---------- ОПЫТ ----------
 async def add_experience(macaco_id: int, amount: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -402,7 +376,6 @@ async def add_experience(macaco_id: int, amount: int):
             level += 1
         await conn.execute('UPDATE macacos SET experience = $1, level = $2 WHERE macaco_id = $3', exp, level, macaco_id)
 
-# ---------- ТОП ----------
 async def get_top_macacos(limit: int = 5) -> List[Tuple]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -420,7 +393,6 @@ async def get_top_macacos(limit: int = 5) -> List[Tuple]:
         ''', limit)
         return [(r['name'], r['weight'], r['level'], r['username']) for r in rows]
 
-# ---------- ПОИСК ----------
 async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -434,8 +406,7 @@ async def search_macacos(query: str, limit: int = 10) -> List[Dict]:
         ''', f'%{query}%', limit)
         return [dict(r) for r in rows]
 
-# ---------- ИНИЦИАЛИЗАЦИЯ ----------
 async def init_db():
+    """Вызывается при старте бота для создания таблиц и кэша."""
+    await get_pool()
     await create_tables()
-
-asyncio.run(init_db())
