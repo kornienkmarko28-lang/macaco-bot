@@ -6,20 +6,18 @@ import asyncio
 from typing import Dict, List, Tuple, Optional
 
 # ========== ПОДКЛЮЧЕНИЕ К БАЗЕ ==========
-DATABASE_URL = os.getenv('DATABASE_URL')  # Берём из переменных окружения Bothost
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL не задан! Добавьте его в переменные окружения Bothost.")
 
 async def get_connection():
-    """Возвращает подключение к базе данных."""
     return await asyncpg.connect(DATABASE_URL)
 
 # ========== СОЗДАНИЕ ТАБЛИЦ ==========
 async def create_tables():
     conn = await get_connection()
     try:
-        # Пользователи
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -29,7 +27,6 @@ async def create_tables():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         ''')
-        # Макаки
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS macacos (
                 macaco_id SERIAL PRIMARY KEY,
@@ -48,7 +45,6 @@ async def create_tables():
                 last_health_decay TIMESTAMP
             )
         ''')
-        # Бои
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS fights (
                 fight_id SERIAL PRIMARY KEY,
@@ -59,7 +55,6 @@ async def create_tables():
                 fight_time TIMESTAMP DEFAULT NOW()
             )
         ''')
-        # Еда
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS food_types (
                 food_id INTEGER PRIMARY KEY,
@@ -71,7 +66,6 @@ async def create_tables():
                 health_gain INTEGER DEFAULT 10
             )
         ''')
-        # Проверяем, есть ли записи в food_types
         count = await conn.fetchval('SELECT COUNT(*) FROM food_types')
         if count == 0:
             await conn.execute('''
@@ -104,7 +98,6 @@ async def get_or_create_user(user_data: Dict) -> bool:
 async def get_or_create_macaco(user_id: int) -> Dict:
     conn = await get_connection()
     try:
-        # Берём самую свежую макаку пользователя
         row = await conn.fetchrow('''
             SELECT * FROM macacos 
             WHERE user_id = $1 
@@ -113,7 +106,7 @@ async def get_or_create_macaco(user_id: int) -> Dict:
         ''', user_id)
         
         if not row:
-            now = datetime.now().isoformat()
+            now = datetime.now()
             await conn.execute('''
                 INSERT INTO macacos (user_id, last_fed, last_daily, last_happiness_decay, last_hunger_decay, last_health_decay, weight)
                 VALUES ($1, $2, $3, $4, $5, $6, 10)
@@ -136,8 +129,10 @@ async def apply_hunger_decay(macaco_id: int) -> int:
         row = await conn.fetchrow('SELECT hunger, last_hunger_decay FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return 0
-        hunger, last_decay_str = row['hunger'], row['last_hunger_decay']
-        last_decay = datetime.fromisoformat(last_decay_str) if last_decay_str else datetime.now()
+        hunger = row['hunger']
+        last_decay = row['last_hunger_decay']
+        if last_decay is None:
+            last_decay = datetime.now()
         now = datetime.now()
         delta = now - last_decay
         hours_passed = int(delta.total_seconds() // 3600)
@@ -149,7 +144,7 @@ async def apply_hunger_decay(macaco_id: int) -> int:
                 UPDATE macacos 
                 SET hunger = $1, last_hunger_decay = $2 
                 WHERE macaco_id = $3
-            ''', hunger, new_last_decay.isoformat(), macaco_id)
+            ''', hunger, new_last_decay, macaco_id)
         return hunger
     finally:
         await conn.close()
@@ -161,10 +156,13 @@ async def apply_health_decay(macaco_id: int) -> int:
         row = await conn.fetchrow('SELECT health, hunger, last_health_decay FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return 0
-        health, hunger, last_decay_str = row['health'], row['hunger'], row['last_health_decay']
+        health = row['health']
+        hunger = row['hunger']
+        last_decay = row['last_health_decay']
         if hunger < 100:
             return health
-        last_decay = datetime.fromisoformat(last_decay_str) if last_decay_str else datetime.now()
+        if last_decay is None:
+            last_decay = datetime.now()
         now = datetime.now()
         delta = now - last_decay
         hours_passed = int(delta.total_seconds() // 3600)
@@ -175,7 +173,7 @@ async def apply_health_decay(macaco_id: int) -> int:
                 UPDATE macacos 
                 SET health = $1, last_health_decay = $2 
                 WHERE macaco_id = $3
-            ''', health, new_last_decay.isoformat(), macaco_id)
+            ''', health, new_last_decay, macaco_id)
         return health
     finally:
         await conn.close()
@@ -213,9 +211,8 @@ async def can_feed_food(macaco_id: int, food_id: int) -> Tuple[bool, Optional[st
             return False, "Нет такой еды"
         cooldown_hours = food['cooldown_hours']
         last_fed = await conn.fetchval('SELECT last_fed FROM macacos WHERE macaco_id = $1', macaco_id)
-        if not last_fed:
+        if last_fed is None:
             return True, None
-        last_fed = datetime.fromisoformat(last_fed)
         now = datetime.now()
         if (now - last_fed).total_seconds() > cooldown_hours * 3600:
             return True, None
@@ -248,7 +245,7 @@ async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
                 weight = weight + $4,
                 health = LEAST(100, health + $5)
             WHERE macaco_id = $6
-        ''', datetime.now().isoformat(),
+        ''', datetime.now(),
               food['hunger_decrease'],
               food['happiness_gain'],
               food['weight_gain'],
@@ -263,9 +260,9 @@ async def can_get_daily(macaco_id: int) -> Tuple[bool, Optional[str]]:
     conn = await get_connection()
     try:
         last_daily = await conn.fetchval('SELECT last_daily FROM macacos WHERE macaco_id = $1', macaco_id)
-        if not last_daily:
+        if last_daily is None:
             return True, None
-        last = datetime.fromisoformat(last_daily).date()
+        last = last_daily.date()
         today = datetime.now().date()
         if today > last:
             return True, None
@@ -287,7 +284,7 @@ async def give_daily_reward(macaco_id: int) -> bool:
                 happiness = LEAST(100, happiness + 5),
                 health = LEAST(100, health + 5)
             WHERE macaco_id = $2
-        ''', datetime.now().isoformat(), macaco_id)
+        ''', datetime.now(), macaco_id)
         return True
     finally:
         await conn.close()
@@ -299,8 +296,10 @@ async def apply_happiness_decay(macaco_id: int) -> int:
         row = await conn.fetchrow('SELECT happiness, last_happiness_decay FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return 0
-        happiness, last_decay_str = row['happiness'], row['last_happiness_decay']
-        last_decay = datetime.fromisoformat(last_decay_str) if last_decay_str else datetime.now()
+        happiness = row['happiness']
+        last_decay = row['last_happiness_decay']
+        if last_decay is None:
+            last_decay = datetime.now()
         now = datetime.now()
         delta = now - last_decay
         hours_passed = int(delta.total_seconds() // 3600)
@@ -311,7 +310,7 @@ async def apply_happiness_decay(macaco_id: int) -> int:
                 UPDATE macacos 
                 SET happiness = $1, last_happiness_decay = $2 
                 WHERE macaco_id = $3
-            ''', happiness, new_last_decay.isoformat(), macaco_id)
+            ''', happiness, new_last_decay, macaco_id)
         return happiness
     finally:
         await conn.close()
@@ -388,7 +387,8 @@ async def add_experience(macaco_id: int, amount: int):
         row = await conn.fetchrow('SELECT experience, level FROM macacos WHERE macaco_id = $1', macaco_id)
         if not row:
             return
-        exp, level = row['experience'], row['level']
+        exp = row['experience']
+        level = row['level']
         exp += amount
         while exp >= 100:
             exp -= 100
