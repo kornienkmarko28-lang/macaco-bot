@@ -68,10 +68,10 @@ async def create_tables():
             await conn.execute('''
                 INSERT INTO food_types (food_id, name, weight_gain, happiness_gain, hunger_decrease, cooldown_hours, health_gain)
                 VALUES 
-                (1, '🍌 Банан', 1, 10, 30, 5, 10),
-                (2, '🥩 Мясо', 3, 5, 50, 8, 15),
-                (3, '🍰 Торт', 5, 20, 70, 12, 5),
-                (4, '🥗 Салат', 2, 15, 40, 6, 12)
+                (1, '🍌 Банан', 1, 0, 30, 5, 10),
+                (2, '🥩 Мясо', 3, 0, 50, 8, 15),
+                (3, '🍰 Торт', 5, 0, 70, 12, 5),
+                (4, '🥗 Салат', 2, 0, 40, 6, 12)
             ''')
         print("✅ Таблицы созданы/проверены")
     finally:
@@ -102,7 +102,6 @@ async def get_or_create_macaco(user_id: int) -> Dict:
 
         if not row:
             now = datetime.now()
-            # Важно: last_fed = None, чтобы у новой макаки не было КД
             await conn.execute('''
                 INSERT INTO macacos (user_id, last_fed, last_daily, last_happiness_decay, last_hunger_decay, last_health_decay, weight)
                 VALUES ($1, NULL, $2, $3, $4, $5, 10)
@@ -237,13 +236,11 @@ async def feed_macaco_with_food(macaco_id: int, food_id: int) -> bool:
             UPDATE macacos 
             SET last_fed = $1,
                 hunger = GREATEST(0, hunger - $2),
-                happiness = LEAST(100, happiness + $3),
-                weight = weight + $4,
-                health = LEAST(100, health + $5)
-            WHERE macaco_id = $6
+                weight = weight + $3,
+                health = LEAST(100, health + $4)
+            WHERE macaco_id = $5
         ''', datetime.now(),
               food['hunger_decrease'],
-              food['happiness_gain'],
               food['weight_gain'],
               food['health_gain'],
               macaco_id)
