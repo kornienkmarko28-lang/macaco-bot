@@ -53,11 +53,7 @@ challenge_counter = 0
 # ---------- Вспомогательная функция отправки главного меню ----------
 async def send_main_menu(chat_id: int, user_id: int):
     """Отправляет главное меню для указанного пользователя в указанный чат."""
-    macaco = await db.get_or_create_macaco(user_id)
-    await db.apply_happiness_decay(macaco['macaco_id'])
-    await db.apply_hunger_decay(macaco['macaco_id'])
-    await db.apply_health_decay(macaco['macaco_id'])
-    macaco = await db.get_or_create_macaco(user_id)
+    macaco = await db.get_macaco_with_decay(user_id)
 
     welcome_text = (
         f"🎮 <b>Меню макаки {macaco['name']}</b> 🐒\n\n"
@@ -91,11 +87,7 @@ async def show_my_macaco(user_id: int, source):
                 await source.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
                 return
             await source.answer()
-        macaco = await db.get_or_create_macaco(user_id)
-        await db.apply_happiness_decay(macaco['macaco_id'])
-        await db.apply_hunger_decay(macaco['macaco_id'])
-        await db.apply_health_decay(macaco['macaco_id'])
-        macaco = await db.get_or_create_macaco(user_id)
+        macaco = await db.get_macaco_with_decay(user_id)
 
         can_daily, daily_time = await db.can_get_daily(macaco['macaco_id'])
         daily_status = "✅ Доступна" if can_daily else f"⏳ Через: {daily_time}"
@@ -285,18 +277,15 @@ async def process_new_name(message: Message, state: FSMContext):
     if not all(c.isalnum() or c in ' _-' for c in new_name):
         await message.answer("❌ Недопустимые символы.")
         return
-    conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
-    try:
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
         await conn.execute('UPDATE macacos SET name = $1 WHERE user_id = $2', new_name, user_id)
-    finally:
-        await conn.close()
     await message.answer(f"✅ Имя изменено на {new_name}!", parse_mode=None, reply_markup=kb.main_menu_kb(user_id))
     await state.clear()
 
 # ---------- Универсальный обработчик защищённых callback ----------
 @dp.callback_query(F.data.contains(":"))
 async def protected_callback_handler(callback: CallbackQuery, state: FSMContext):
-    # Разбираем callback_data: ожидаем формат "действие:owner_id" или "действие:owner_id:доп_данные"
     parts = callback.data.split(":")
     if len(parts) < 2:
         await callback.answer("Ошибка данных", show_alert=True)
@@ -310,13 +299,10 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
 
     current_user_id = callback.from_user.id
 
-    # Если нажал не владелец – отправляем новое меню нажавшему и выходим
     if current_user_id != owner_id:
-        await callback.answer()  # просто закрываем callback
+        await callback.answer()
         await send_main_menu(callback.message.chat.id, current_user_id)
         return
-
-    # Далее – только для владельца
 
     # ---------- Обработка основных действий ----------
     if action == "my_macaco":
@@ -336,7 +322,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
 
     elif action.startswith("food_"):
         food_id = int(action.split("_")[1])
-        food = await db.get_food_info(food_id)
+        food = await db.get_food_info_cached(food_id)
         if not food:
             await callback.answer("❌ Еда не найдена")
             return
@@ -358,11 +344,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         food_id = int(action.split("_")[1])
         user_id = current_user_id
         try:
-            macaco = await db.get_or_create_macaco(user_id)
-            await db.apply_happiness_decay(macaco['macaco_id'])
-            await db.apply_hunger_decay(macaco['macaco_id'])
-            await db.apply_health_decay(macaco['macaco_id'])
-            macaco = await db.get_or_create_macaco(user_id)
+            macaco = await db.get_macaco_with_decay(user_id)
 
             if macaco['happiness'] <= 0:
                 await callback.message.edit_text(
@@ -373,7 +355,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
                 await callback.answer()
                 return
 
-            food = await db.get_food_info(food_id)
+            food = await db.get_food_info_cached(food_id)
             if not food:
                 await callback.answer("❌ Еда не найдена")
                 return
@@ -389,7 +371,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
                 return
 
             await db.feed_macaco_with_food(macaco['macaco_id'], food_id)
-            macaco = await db.get_or_create_macaco(user_id)
+            macaco = await db.get_or_create_macaco(user_id)  # обновляем
 
             await callback.message.answer(
                 f"🍽️ Макака поела {food['name']}!\n"
@@ -417,11 +399,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
     elif action == "daily_reward":
         user_id = current_user_id
         try:
-            macaco = await db.get_or_create_macaco(user_id)
-            await db.apply_happiness_decay(macaco['macaco_id'])
-            await db.apply_hunger_decay(macaco['macaco_id'])
-            await db.apply_health_decay(macaco['macaco_id'])
-            macaco = await db.get_or_create_macaco(user_id)
+            macaco = await db.get_macaco_with_decay(user_id)
 
             can, time_left = await db.can_get_daily(macaco['macaco_id'])
             if not can:
@@ -458,10 +436,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
     elif action == "walk_macaco":
         user_id = current_user_id
         try:
-            macaco = await db.get_or_create_macaco(user_id)
-            await db.apply_happiness_decay(macaco['macaco_id'])
-            await db.apply_hunger_decay(macaco['macaco_id'])
-            await db.apply_health_decay(macaco['macaco_id'])
+            macaco = await db.get_macaco_with_decay(user_id)
             await db.walk_macaco(macaco['macaco_id'])
             macaco = await db.get_or_create_macaco(user_id)
 
@@ -494,15 +469,9 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         await callback.message.edit_text("❌ Бой отменён", reply_markup=kb.main_menu_kb(current_user_id))
         await callback.answer()
 
-    # ---------- Обработка вызова на бой ----------
     elif action == "challenge_fight":
         user_id = current_user_id
-        # Проверка здоровья и голода
-        user_macaco = await db.get_or_create_macaco(user_id)
-        await db.apply_happiness_decay(user_macaco['macaco_id'])
-        await db.apply_hunger_decay(user_macaco['macaco_id'])
-        await db.apply_health_decay(user_macaco['macaco_id'])
-        user_macaco = await db.get_or_create_macaco(user_id)
+        user_macaco = await db.get_macaco_with_decay(user_id)
 
         if user_macaco['health'] <= 0:
             await callback.message.edit_text("💔 Слишком слаб для боя! Восстанови здоровье.", reply_markup=kb.main_menu_kb(user_id))
@@ -513,24 +482,19 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await callback.answer()
             return
 
-        # Получаем список соперников
-        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
-        try:
+        pool = await db.get_pool()
+        async with pool.acquire() as conn:
             opponents = await conn.fetch('''
                 SELECT macaco_id, name, weight, level, user_id FROM macacos WHERE user_id != $1
             ''', user_id)
-        finally:
-            await conn.close()
 
         if not opponents:
             await callback.message.edit_text("😕 Нет соперников!", reply_markup=kb.main_menu_kb(user_id))
             await callback.answer()
             return
 
-        # Сохраняем список в FSM
         await state.update_data(opponents_list=opponents, challenger_id=user_id)
 
-        # Формируем клавиатуру выбора соперника (без owner_id, потому что это переходное меню, доступное только владельцу)
         btns = []
         for opp in opponents[:10]:
             opp_id, name, weight, level, _ = opp
@@ -540,9 +504,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         await callback.message.edit_text("🥊 Выберите соперника:", parse_mode=None, reply_markup=markup)
         await callback.answer()
 
-    # ---------- Обработка выбора соперника ----------
     elif action == "select_opp":
-        # Формат: select_opp:owner_id:opponent_id
         if len(parts) != 3:
             await callback.answer("Ошибка данных", show_alert=True)
             return
@@ -553,18 +515,14 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             return
 
         user_id = current_user_id
-        # Получаем данные соперника
-        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
-        try:
+        pool = await db.get_pool()
+        async with pool.acquire() as conn:
             opp = await conn.fetchrow('SELECT name, weight, level FROM macacos WHERE macaco_id = $1', opponent_id)
-        finally:
-            await conn.close()
         if not opp:
             await callback.message.edit_text("❌ Соперник недоступен", reply_markup=kb.main_menu_kb(user_id))
             await callback.answer()
             return
 
-        # Сохраняем ID соперника в FSM
         await state.update_data(challenge_opponent_id=opponent_id, opponent_name=opp['name'])
 
         text = (
@@ -576,9 +534,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         await callback.message.edit_text(text, parse_mode=None, reply_markup=markup)
         await callback.answer()
 
-    # ---------- Обработка выбора ставки ----------
     elif action.startswith("challenge_bet_"):
-        # Формат: challenge_bet_1:owner_id:opponent_id
         if len(parts) != 3:
             await callback.answer("Ошибка данных", show_alert=True)
             return
@@ -586,11 +542,7 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
         opponent_id = int(parts[2])
         user_id = current_user_id
 
-        user_macaco = await db.get_or_create_macaco(user_id)
-        await db.apply_happiness_decay(user_macaco['macaco_id'])
-        await db.apply_hunger_decay(user_macaco['macaco_id'])
-        await db.apply_health_decay(user_macaco['macaco_id'])
-        user_macaco = await db.get_or_create_macaco(user_id)
+        user_macaco = await db.get_macaco_with_decay(user_id)
 
         can, msg = await db.can_make_bet(user_macaco['macaco_id'], bet_amount)
         if not can:
@@ -598,11 +550,9 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await callback.answer()
             return
 
-        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
-        try:
+        pool = await db.get_pool()
+        async with pool.acquire() as conn:
             opp_data = await conn.fetchrow('SELECT name, weight, user_id FROM macacos WHERE macaco_id = $1', opponent_id)
-        finally:
-            await conn.close()
         if not opp_data:
             await callback.message.edit_text("❌ Соперник недоступен", reply_markup=kb.main_menu_kb(user_id))
             await callback.answer()
@@ -615,7 +565,6 @@ async def protected_callback_handler(callback: CallbackQuery, state: FSMContext)
             await callback.answer()
             return
 
-        # Проверяем, может ли бот отправить сообщение сопернику
         try:
             await bot.send_chat_action(opp_user_id, action="typing")
         except:
@@ -697,16 +646,8 @@ async def accept_fight_callback(callback: CallbackQuery):
         return
     chall['task'].cancel()
 
-    c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
-    o_macaco = await db.get_or_create_macaco(opp_user_id)
-    await db.apply_happiness_decay(c_macaco['macaco_id'])
-    await db.apply_hunger_decay(c_macaco['macaco_id'])
-    await db.apply_health_decay(c_macaco['macaco_id'])
-    await db.apply_happiness_decay(o_macaco['macaco_id'])
-    await db.apply_hunger_decay(o_macaco['macaco_id'])
-    await db.apply_health_decay(o_macaco['macaco_id'])
-    c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
-    o_macaco = await db.get_or_create_macaco(opp_user_id)
+    c_macaco = await db.get_macaco_with_decay(chall['challenger_id'])
+    o_macaco = await db.get_macaco_with_decay(opp_user_id)
     bet = chall['bet']
 
     if c_macaco['health'] <= 0 or o_macaco['health'] <= 0:
@@ -738,6 +679,7 @@ async def accept_fight_callback(callback: CallbackQuery):
     exp_gain = 25 if winner_id == c_macaco['macaco_id'] else 10
     await db.add_experience(winner_id, exp_gain)
 
+    # Получаем обновлённые данные после боя
     c_macaco = await db.get_or_create_macaco(chall['challenger_id'])
     o_macaco = await db.get_or_create_macaco(opp_user_id)
 
@@ -760,11 +702,14 @@ async def accept_fight_callback(callback: CallbackQuery):
         f"❤️ Здоровье проигравшего: {loser_hp}/100\n"
         f"────────────────────"
     )
-    await callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None)
-    try:
-        await bot.send_message(chall['challenger_id'], result_msg, parse_mode=None)
-    except:
-        pass
+
+    # Отправляем результат обоим участникам параллельно
+    await asyncio.gather(
+        callback.message.edit_text(result_msg, parse_mode=None, reply_markup=None),
+        bot.send_message(chall['challenger_id'], result_msg, parse_mode=None),
+        return_exceptions=True
+    )
+
     del active_challenges[cid]
     await callback.answer()
 
@@ -832,11 +777,7 @@ async def inline_mode(inline_query: InlineQuery):
     results = []
     try:
         if q in ["", "info", "мой", "макака"]:
-            m = await db.get_or_create_macaco(uid)
-            await db.apply_happiness_decay(m['macaco_id'])
-            await db.apply_hunger_decay(m['macaco_id'])
-            await db.apply_health_decay(m['macaco_id'])
-            m = await db.get_or_create_macaco(uid)
+            m = await db.get_macaco_with_decay(uid)
             results.append(InlineQueryResultArticle(
                 id="1", title=f"🐒 {m['name']}",
                 description=f"Вес: {m['weight']} кг | Ур. {m['level']} | ❤️ {m['health']} | 🍖 {100 - m['hunger']} | 😊 {m['happiness']}",
@@ -904,6 +845,8 @@ async def inline_mode(inline_query: InlineQuery):
 async def main():
     global BOT_USERNAME
     logger.info("🤖 Бот 'Боевые Макаки PRO' запускается...")
+    # Инициализируем пул БД при старте
+    await db.get_pool()
     try:
         bot_info = await bot.get_me()
         BOT_USERNAME = bot_info.username
