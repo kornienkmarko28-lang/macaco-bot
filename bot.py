@@ -66,7 +66,6 @@ async def send_gif(chat_id, gif_type: str, gif_name: str, caption: str = "", par
 async def show_my_macaco(user_id: int, source):
     try:
         if isinstance(source, CallbackQuery):
-            # Если сообщение не существует – просто отвечаем на callback и выходим
             if source.message is None:
                 await source.answer("Сообщение устарело. Нажмите /start заново.", show_alert=True)
                 return
@@ -178,10 +177,10 @@ async def help_command(message: Message):
         "/top   – топ‑5 самых тяжёлых макак\n"
         "/help  – эта справка\n\n"
         "🔹 **ЕДА**\n"
-        "🍌 Банан     +1 кг   +10😊  -30🍖  +10❤️  КД 5ч\n"
-        "🥩 Мясо      +3 кг   +5😊   -50🍖  +15❤️  КД 8ч\n"
-        "🍰 Торт      +5 кг   +20😊  -70🍖  +5❤️   КД12ч\n"
-        "🥗 Салат     +2 кг   +15😊  -40🍖  +12❤️  КД 6ч\n"
+        "🍌 Банан     +1 кг   +10😊  +30🍖  +10❤️  КД 5ч\n"
+        "🥩 Мясо      +3 кг   +5😊   +50🍖  +15❤️  КД 8ч\n"
+        "🍰 Торт      +5 кг   +20😊  +70🍖  +5❤️   КД12ч\n"
+        "🥗 Салат     +2 кг   +15😊  +40🍖  +12❤️  КД 6ч\n"
         "   ❗ При сытости = 0 макака теряет здоровье.\n"
         "   ❗ При настроении = 0 отказывается есть.\n\n"
         "🔹 **ЕЖЕДНЕВНАЯ НАГРАДА** 🎁\n"
@@ -222,7 +221,7 @@ async def help_command(message: Message):
             "📖 ПОМОЩЬ (кратко)\n"
             "────────────────\n"
             "/start, /my, /rename, /top, /help\n"
-            "🍌 Еда: +вес, +❤️, +😊, -🍖, КД 5-12ч\n"
+            "🍌 Еда: +вес, +❤️, +😊, +🍖, КД 5-12ч\n"
             "🎁 Ежедневно: +1 кг, +5❤️, +5😊\n"
             "🚶 Прогулка: 😊=100\n"
             "⚔️ Бой: вызов → ставка → 60сек\n"
@@ -305,10 +304,10 @@ async def select_food_callback(callback: CallbackQuery):
         return
     text = (
         "🍽️ Выберите еду:\n\n"
-        "🍌 Банан: +1 кг, КД 5ч, +10 😊, -30 🍖, +10 ❤️\n"
-        "🥩 Мясо: +3 кг, КД 8ч, +5 😊, -50 🍖, +15 ❤️\n"
-        "🍰 Торт: +5 кг, КД 12ч, +20 😊, -70 🍖, +5 ❤️\n"
-        "🥗 Салат: +2 кг, КД 6ч, +15 😊, -40 🍖, +12 ❤️"
+        "🍌 Банан: +1 кг, КД 5ч, +10 😊, +30 🍖, +10 ❤️\n"
+        "🥩 Мясо: +3 кг, КД 8ч, +5 😊, +50 🍖, +15 ❤️\n"
+        "🍰 Торт: +5 кг, КД 12ч, +20 😊, +70 🍖, +5 ❤️\n"
+        "🥗 Салат: +2 кг, КД 6ч, +15 😊, +40 🍖, +12 ❤️"
     )
     await callback.message.edit_text(text, parse_mode=None, reply_markup=kb.food_selection_kb())
     await callback.answer()
@@ -328,7 +327,7 @@ async def food_info_callback(callback: CallbackQuery):
         f"────────────────────\n"
         f"🏋️ +{food['weight_gain']} кг\n"
         f"😊 +{food['happiness_gain']}\n"
-        f"🍖 -{food['hunger_decrease']}\n"
+        f"🍖 +{food['hunger_decrease']}\n"
         f"❤️ +{food['health_gain']}\n"
         f"⏳ КД {food['cooldown_hours']} ч\n"
         f"────────────────────\n"
@@ -382,7 +381,7 @@ async def feed_with_food_callback(callback: CallbackQuery):
             f"🍽️ Макака поела {food['name']}!\n"
             f"🏋️ Вес: +{food['weight_gain']} кг (теперь {macaco['weight']} кг)\n"
             f"❤️ Здоровье: +{food['health_gain']} (теперь {macaco['health']}/100)\n"
-            f"🍖 Сытость: -{food['hunger_decrease']} (теперь {100 - macaco['hunger']}/100)\n"
+            f"🍖 Сытость: +{food['hunger_decrease']} (теперь {100 - macaco['hunger']}/100)\n"
             f"😊 Настроение: +{food['happiness_gain']} (теперь {macaco['happiness']}/100)",
             parse_mode=None
         )
@@ -788,7 +787,6 @@ async def main_menu_callback(callback: CallbackQuery):
 async def help_info_callback(callback: CallbackQuery):
     await callback.answer()
     if callback.message is None:
-        # Если сообщение не существует, просто отправляем справку новым сообщением
         await help_command(callback.message)
     else:
         await help_command(callback.message)
@@ -815,21 +813,21 @@ async def inline_mode(inline_query: InlineQuery):
                         f"❤️ Здоровье: {m['health']}/100\n🍖 Сытость: {100 - m['hunger']}/100\n😊 Настроение: {m['happiness']}/100"
                     ), parse_mode=None
                 ),
-                reply_markup=kb.inline_actions_kb(m['macaco_id']),
+                # Кнопки убраны
                 thumbnail_url="https://img.icons8.com/color/96/000000/monkey.png"
             ))
         elif q in ["feed", "кормить", "еда"]:
             results.append(InlineQueryResultArticle(
                 id="2", title="🍌 Покормить макаку", description="Выберите еду",
                 input_message_content=InputTextMessageContent(message_text="🍽️ Выберите еду:", parse_mode=None),
-                reply_markup=kb.food_selection_kb(),
+                # Кнопки убраны
                 thumbnail_url="https://img.icons8.com/color/96/000000/banana.png"
             ))
         elif q in ["fight", "бой", "вызов"]:
             results.append(InlineQueryResultArticle(
                 id="3", title="⚔️ Вызвать на бой", description="Список соперников",
                 input_message_content=InputTextMessageContent(message_text="⚔️ Вызов на бой", parse_mode=None),
-                reply_markup=kb.inline_actions_kb(0),
+                reply_markup=kb.inline_actions_kb(0),  # оставляем кнопку
                 thumbnail_url="https://img.icons8.com/color/96/000000/boxing.png"
             ))
         elif q in ["top", "топ", "рейтинг"]:
@@ -844,6 +842,7 @@ async def inline_mode(inline_query: InlineQuery):
             results.append(InlineQueryResultArticle(
                 id="4", title="🏆 Топ игроков", description="Лучшие по весу",
                 input_message_content=InputTextMessageContent(message_text=txt, parse_mode=None),
+                # Кнопки убраны
                 thumbnail_url="https://img.icons8.com/color/96/000000/prize.png"
             ))
         else:
