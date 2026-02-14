@@ -130,14 +130,14 @@ async def show_top_players(callback: CallbackQuery, user_id: int):
         if callback.message is None:
             await callback.answer("Сообщение устарело.", show_alert=True)
             return
-        top = await db.get_top_macacos(5)
+        top = await db.get_top_macacos(10)  # ← изменено с 5 на 10
         if not top:
             text = "📊 Топ пуст! Будьте первым!"
             markup = kb.main_menu_kb(user_id)
         else:
-            lines = ["🏆 ТОП-5 МАКАК 🏆\n", "────────────────────"]
-            medals = ["🥇", "🥈", "🥉", "4.", "5."]
-            for idx, (name, weight, level, username) in enumerate(top[:5]):
+            lines = ["🏆 ТОП-10 МАКАК 🏆\n", "────────────────────"]
+            medals = ["🥇", "🥈", "🥉"] + [f"{i}." for i in range(4, 11)]
+            for idx, (name, weight, level, username) in enumerate(top[:10]):
                 medal = medals[idx]
                 user_display = f"@{username}" if username else "Без юзернейма"
                 lines.append(f"{medal} {name}\n   🏋️ {weight} кг | ⭐ Ур. {level}\n   👤 {user_display}\n")
@@ -244,14 +244,14 @@ async def my_macaco_command(message: Message):
 async def top_command(message: Message):
     user_id = message.from_user.id
     try:
-        top = await db.get_top_macacos(5)
+        top = await db.get_top_macacos(10)  # ← изменено с 5 на 10
         if not top:
             text = "📊 Топ пуст! Будьте первым!"
             markup = kb.main_menu_kb(user_id)
         else:
-            lines = ["🏆 ТОП-5 МАКАК 🏆\n", "────────────────────"]
-            medals = ["🥇", "🥈", "🥉", "4.", "5."]
-            for idx, (name, weight, level, username) in enumerate(top[:5]):
+            lines = ["🏆 ТОП-10 МАКАК 🏆\n", "────────────────────"]
+            medals = ["🥇", "🥈", "🥉"] + [f"{i}." for i in range(4, 11)]
+            for idx, (name, weight, level, username) in enumerate(top[:10]):
                 medal = medals[idx]
                 user_display = f"@{username}" if username else "Без юзернейма"
                 lines.append(f"{medal} {name}\n   🏋️ {weight} кг | ⭐ Ур. {level}\n   👤 {user_display}\n")
@@ -812,3 +812,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
